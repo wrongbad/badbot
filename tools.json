@@ -1,0 +1,15 @@
+[
+  {
+    "name": "shell",
+    "description": "Run a command with bash, stdout and stderr together. The result's first line is [exit N] or [signal N]; the output follows. Each call is a fresh shell in the working directory. You get the result when the command ends, unless wait runs out or a message arrives first: then it goes on as a job, and its result arrives later as a message of its own.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "command": {"type": "string", "description": "The command line, as you would type it."},
+        "wait": {"type": "number", "minimum": 0, "description": "Seconds to wait before it goes on as a job; 0 for a server or anything you need not wait for. By default, until it ends."}
+      },
+      "required": ["command"]
+    },
+    "program": "bash"
+  }
+]
