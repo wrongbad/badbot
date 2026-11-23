@@ -31,11 +31,13 @@ kill_call() {
 }
 
 # job_after SECONDS ID: says the call goes on as a job, if it still runs then,
-# and has not gone on as one already ($c.job).
+# and has not gone on as one already ($c.job: a message sent it). The sleep
+# runs in the foreground, as a background one would ignore Ctrl-C; its stderr
+# is muted, as when the call ends and kills it, bash says "Terminated: 15".
 job_after() {
     local c
     c=$(calls "$2")
-    { sleep "$1"; [[ -e $c.status || -e $c.job ]] || { : >"$c.job"; put '{type:"job",call:$id}' --arg id "$2"; }; } &
+    { { sleep "$1"; } 2>/dev/null; [[ -e $c.status || -e $c.job ]] || { : >"$c.job"; put '{type:"job",call:$id}' --arg id "$2"; }; } &
 }
 
 # Worker: one call, after its tool_start, to its block. Past its wait, a timer
@@ -84,8 +86,7 @@ while IFS= read -r line; do
                 run_call "$call" >/dev/null & # workers say on fd 3; stdout is the next actor's
                 running[$(jq -r .id <<<"$call")]=$!
             done < <(jq -c '.message.content[] | select(.type == "tool_use")' <<<"$line") ;;
-        '{"type":"hurry"'*) # a message waits: a call still running in 2 seconds goes on as a job
-            for id in "${!running[@]}"; do job_after 2 "$id" >/dev/null; done ;;
+        '{"type":"job"'*) [[ $line =~ $CALL ]] && : >"$(calls "${BASH_REMATCH[1]}").job" ;; # its timer need not say so too
         '{"type":"cancel"'*) [[ $line =~ $CALL && ${running[${BASH_REMATCH[1]}]-} ]] && kill_call "${BASH_REMATCH[1]}" ;;
         '{"type":"block"'*) [[ $line =~ $CALL ]] && unset 'running[${BASH_REMATCH[1]}]' ;;
         '{"type":"exit"'*)

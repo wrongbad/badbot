@@ -3,15 +3,15 @@
 # jobs' late results) and the turn's tool results, and decides when they go
 # in: all that is due as one user message, whenever the model is not talking.
 # Every call is answered in the next message: one still running, by a note
-# that it is now a job. A message waits for the turn's calls, but not for long:
-# it asks the tools to hurry, and the slow ones go on as jobs.
+# that it is now a job. A message never waits for a call: the calls still
+# running go on as jobs.
 # Opens and closes runs, and decides alone when the model talks (continue) and
 # what an abort stops (preempt, cancel), so the other actors hear it in order.
 # Says exit once stdin has ended and nothing is left.
 #   printf '%s\n' '{"type":"send","content":"hi"}' '{"type":"eof"}' | badbot/inbox.sh
 . "$(dirname "$0")/lib.sh"
 
-open= busy= abort= stop= eof= hurried= settled=1 # busy: the model is talking
+open= busy= abort= stop= eof= settled=1 # busy: the model is talking
 queue=() news=() calls=() # what was sent; jobs' results; the turn's calls, in order
 declare -A pending=() results=() jobs=()
 run=$(grep -c '^{"type":"run_start"' "$session" 2>/dev/null)
@@ -23,9 +23,13 @@ cancel() { for id; do put '{type:"cancel",call:$id}' --arg id "$id"; done; }
 # event the inbox cares about.
 deliver() {
     [[ $busy ]] && return # everything waits for the model's turn_end
-    if ((${#pending[@]})); then # wait for the calls; if a message waits too, not for long
-        ((${#queue[@]} + ${#news[@]})) && [[ ! $abort && ! $hurried ]] && { hurried=1; say '{"type":"hurry"}'; }
-        return
+    if ((${#pending[@]})); then
+        ((${#queue[@]} + ${#news[@]})) && [[ ! $abort ]] || return # wait for the calls
+        for id in "${!pending[@]}"; do # a message never waits for a call:
+            jobs[$id]=1                # the calls still running go on as jobs
+            put '{type:"job",call:$id}' --arg id "$id"
+        done
+        pending=()
     fi
     local content=() source=results
     for id in "${calls[@]}"; do # the answers first, in call order; a job's says where its output goes
@@ -33,7 +37,7 @@ deliver() {
             tool_use_id:$id, content:[{type:"text", text:"[a job now: its result comes later, in a message of its own. Its output: \($out)]"}]}')
         content+=("${results[$id]}")
     done
-    calls=() results=() hurried=
+    calls=() results=()
     if [[ ! $abort ]] && ((${#queue[@]} + ${#news[@]})); then
         ((${#content[@]})) && source=results+inbox || source=inbox
         content+=("${queue[@]}" "${news[@]}") queue=() news=()

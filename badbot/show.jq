@@ -1,9 +1,15 @@
 # show.jq: the event stream as a person reads it: badbot.sh's stdout. The raw
-# events are in the session file. Run with -nR and $tty (true: color): it
-# remembers each call's command, to name it again when its result comes, and
-# whether the agent is mid-line, to end that line before anything else. A line
-# that is not JSON is skipped, not fatal.
+# events are in the session file. Run with -nR, $tty (true: color) and $typing
+# (true: a person types at a terminal): it remembers each call's command, to
+# name it again when its result comes, and whether the agent is mid-line, or a
+# prompt is waiting, to end that line before anything else. A line that is not
+# JSON is skipped, not fatal.
+#
+# What a person types, the terminal shows as they type it, so it gets a prompt,
+# when a run ends, rather than a label: typed mid-run, it has neither. What is
+# piped in, nothing shows, so each send is shown here.
 def tag($s; $color): (if $tty then "\u001b[1;\($color)m\($s)\u001b[0m" else $s end) + " ";
+def cyan($s): tag($s; 36);
 def blue($s): tag($s; 34);
 def green($s): tag($s; 32);
 def red($s): tag($s; 31);
@@ -18,19 +24,35 @@ def output:
 def command: .input.command // "\(.name) \(.input | tojson)";
 def tool: if .input.command then "bash" else .name end;
 
-foreach (inputs | fromjson? // empty) as $e ({calls: {}, open: false, bol: true, out: ""};
+def prompt: if $typing then blue("you") else "" end;
+
+# a send's content as text: a string, or its text blocks, with [type] for others
+def said:
+  if type == "string" then .
+  elif type == "array" then
+    map(if type != "object" then empty elif .type == "text" then .text | tostring
+        elif .type then "[\(.type)]" else empty end) | join(" ")
+  else "" end;
+
+foreach (inputs | fromjson? // empty) as $e ({calls: {}, early: {}, open: false, bol: true, prompt: false, out: ""};
   .out = ""
   | if $e.type == "text_delta" then
-      .out = (if .open then "" else blue("agent:") end) + $e.text
+      .out = (if .open then "" else cyan("agent") end) + $e.text
       | .open = true
       | .bol = ($e.text | endswith("\n"))
     else
-      (if $e.type == "hello" then .out = yellow("session") + $e.session + "\n"
+      (if $e.type == "hello" then .out = green("session") + $e.session + "\n"
+       elif $e.type == "send" then
+         if $typing then .prompt = false # the terminal ended the line, with Enter
+         else ($e.content | said) as $s | if $s == "" then . else .out = blue("you") + $s + "\n" end end
        elif $e.type == "tool_start" then
          .calls[$e.call] = ($e | command)
          | .out = green($e | tool) + ($e | command) + "\n"
-       elif $e.type == "job" then
-         .out = green("background") + (.calls[$e.call] // $e.call) + "\n"
+                  + (if .early[$e.call] then green("background") + ($e | command) + "\n" else "" end)
+         | del(.early[$e.call])
+       elif $e.type == "job" then # the inbox can say it before the tools say tool_start: then it waits
+         if .calls[$e.call] then .out = green("background") + .calls[$e.call] + "\n"
+         else .early[$e.call] = true end
        elif $e.type == "block" then
          ($e.block.status // "done") as $s
          | .out = (if $s == "exit 0" then green($s) else red($s) end)
@@ -44,5 +66,9 @@ foreach (inputs | fromjson? // empty) as $e ({calls: {}, open: false, bol: true,
       | if .open and (.out != "" or $e.type == "turn_end") then
           .out = (if .bol then "" else "\n" end) + .out | .open = false | .bol = true
         else . end
-    end;
+    end
+  # a waiting prompt's line ends before anything else is shown, or at exit
+  | if .prompt and (.out != "" or $e.type == "exit") then .out = "\n" + .out | .prompt = false else . end
+  # and a new one waits when the kernel starts, and when a run ends
+  | if ($e.type == "hello" or $e.type == "run_end") and $typing then .out += prompt | .prompt = true else . end;
   .out)

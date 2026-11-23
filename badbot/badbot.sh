@@ -19,6 +19,7 @@ mkdir -p "$BADBOT_SESSION.d" && exec 3>"$BADBOT_SESSION.d/bus" # the bus: fd 3, 
 . "$(dirname "$0")/lib.sh" # and with it, the bus's lock: fd 4
 
 [[ -t 1 && ! ${NO_COLOR-} ]] && tty=true || tty=false # color only on a terminal
+[[ -t 0 ]] && typing=true || typing=false              # a prompt only for a person typing
 
 "$here/input.sh" | "$here/inbox.sh" | "$here/model.sh" | "$here/tools.sh" |
-    tee -a "$session" | jq --unbuffered -nRrj --argjson tty $tty -f "$here/show.jq"
+    tee -a "$session" | jq --unbuffered -nRrj --argjson tty $tty --argjson typing $typing -f "$here/show.jq"

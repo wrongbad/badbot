@@ -64,6 +64,13 @@ lists them, and a script can send it commands, as JSON events, on stdin.
 The system prompt is what [`badbot/system-prompt.sh`](badbot/system-prompt.sh)
 prints.
 
+The tests take about ten seconds, with no key and no network (python3 for the
+OpenAI provider's; `-v` for details, names to run some):
+
+```bash
+tests/test.sh
+```
+
 ## The story of a kernel
 
 An agent kernel, built up from nothing, one idea at a time. Each chapter adds
@@ -328,9 +335,9 @@ There are four:
 | Actor | Listens for | Says | Its job |
 |---|---|---|---|
 | [`input`](badbot/input.sh) | the bus; stdin | `hello`; `send`, commands, `eof` | the head: every event comes in here. A typed line is a `send`; a line starting with `{` is a command as is |
-| [`inbox`](badbot/inbox.sh) | `send`, `abort`, assistant `message`, `turn_end`, `job`, `block`, `eof` | `queued`, `error`, `returned`, `run_start`, user `message`, `continue`, `hurry`, `preempt`, `cancel`, `run_end`, `settled`, `exit` | **when**: what is due goes into the conversation, as one user message, and when the model talks |
+| [`inbox`](badbot/inbox.sh) | `send`, `abort`, assistant `message`, `turn_end`, `job`, `block`, `eof` | `queued`, `error`, `returned`, `run_start`, user `message`, `continue`, `job`, `preempt`, `cancel`, `run_end`, `settled`, `exit` | **when**: what is due goes into the conversation, as one user message, and when the model talks |
 | [`model`](badbot/model.sh) | `run_start`, `message`, `continue`, `preempt`, `turn_end`, `exit` | `turn_start`, the provider's events, assistant `message`, `turn_end` | **talking**: `continue` means a turn |
-| [`tools`](badbot/tools.sh) | assistant `message`, `hurry`, `cancel`, `block`, `exit` | `tool_start`, `job`, `block` | **doing**: each `tool_use` runs, each gets a `block` with its `tool_result` |
+| [`tools`](badbot/tools.sh) | assistant `message`, `job`, `cancel`, `block`, `exit` | `tool_start`, `job`, `block` | **doing**: each `tool_use` runs, each gets a `block` with its `tool_result` |
 
 No actor calls another, and none knows the others exist. The model does not
 know there are tools: told to `continue`, it asks the provider with the
@@ -402,18 +409,22 @@ after every event:
 
 ```bash
 [[ $busy ]] && return # everything waits for the model's turn_end
-if ((${#pending[@]})); then # wait for the calls; if a message waits too, not for long
-    ((${#queue[@]} + ${#news[@]})) && [[ ! $abort && ! $hurried ]] && { hurried=1; say '{"type":"hurry"}'; }
-    return
+if ((${#pending[@]})); then
+    ((${#queue[@]} + ${#news[@]})) && [[ ! $abort ]] || return # wait for the calls
+    for id in "${!pending[@]}"; do # a message never waits for a call:
+        jobs[$id]=1                # the calls still running go on as jobs
+        put '{type:"job",call:$id}' --arg id "$id"
+    done
+    pending=()
 fi
 ```
 
 And if the turn is waiting on calls, say a slow build, your message does not
-wait for them for long. The inbox says `hurry`, and the tools give each call
-two more seconds: a quick one answers as usual, and one still running then
-goes on as a *job* (chapter 8). Your message goes in with the answers, and
-the model reads it. **A message waits for a call two seconds at most.**
-Chapter 3's first two complaints are gone.
+wait for them. **A message never waits for a call.** The calls still running
+go on as *jobs* (chapter 8), the ones that ended give their results, and the
+model reads your message with them. You speak up because something is going
+the wrong way, so it is read at once. Chapter 3's first two complaints are
+gone.
 
 ### 7. Pre-emption
 

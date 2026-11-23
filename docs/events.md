@@ -29,7 +29,7 @@ everyone.
 | `returned` | `content`: the blocks of the sends still queued | an `abort` finds sends still queued; jobs' results stay, and go in after |
 | `run_start` | `run` | something is delivered while no run is open |
 | `message` | `source`: `inbox`, `results` or `results+inbox`; `run`; `message`: a user message | what is due, delivered: an answer for each call first, in call order (for a job, a note saying so and where its output goes), then queued items (a job's late result is one, as text) |
-| `hurry` | | a message waits for the turn's calls: the tools give each two more seconds |
+| `job` | `call` | something is due while the turn's calls still run: each goes on as a job at once (also put by `tools`, below) |
 | `continue` | | the model's turn: a user message went in, outside an aborted run |
 | `run_end` | `run`; `reason`: `done`, `aborted` or `error` | the model stopped without calls and nothing is due |
 | `settled` | | no run, nothing queued, no job |
@@ -48,7 +48,7 @@ everyone.
 | Event | Fields | When |
 |---|---|---|
 | `tool_start` | `call`, `name`, `input` | for each `tool_use` of an assistant message |
-| `job` | `call` | the call still runs when its `wait` runs out, or two seconds after a `hurry` |
+| `job` | `call` | the call still runs when its `wait` runs out |
 | `block` | `call`; `block`: its `tool_result`, text `[exit N]`, `[killed]` (stopped by the kernel) or `[not run]` (no such tool, or no command), then the output (100 000 bytes at most), plus `name`, `status`, `ran` | the call ended |
 
 ## Files
