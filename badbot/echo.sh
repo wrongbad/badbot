@@ -7,17 +7,20 @@
 #   (a tool result)         "The tool said: <its first line>"
 # On SIGTERM it stops and gives back what it has said so far.
 set -f
-IFS= read -r request
-last=$(jq -c '.messages[-1].content' <<<"$request")
-text=$(jq -r 'map(select(.type == "text").text) | last // ""' <<<"$last")
-tool=$(jq -r '[.[] | select(.type == "tool_result") | .content[0].text | split("\n")[0]] | first // ""' <<<"$last")
-
 result() { # STOP CONTENT
     jq -nc --arg stop "$1" --argjson content "$2" '{type:"result", stop:$stop,
         message:{role:"assistant", content:$content},
         usage:{input:0, output:0, cache_read:0, cache_write:0}}'
     exit 0
 }
+said=
+text_so_far() { jq -nc --arg t "$said" 'if $t == "" then [] else [{type:"text", text:$t}] end'; }
+trap 'result aborted "$(text_so_far)"' TERM
+
+IFS= read -r request
+last=$(jq -c '.messages[-1].content' <<<"$request")
+text=$(jq -r 'map(select(.type == "text").text) | last // ""' <<<"$last")
+tool=$(jq -r '[.[] | select(.type == "tool_result") | .content[0].text | split("\n")[0]] | first // ""' <<<"$last")
 
 if [[ $text == '!'* ]]; then
     result tool_use "$(jq -nc --arg t "${text#!}" --arg p $$ '
@@ -30,9 +33,6 @@ fi
 
 reply="echo: $text"
 [[ $tool ]] && reply="The tool said: $tool"
-said=
-text_so_far() { jq -nc --arg t "$said" 'if $t == "" then [] else [{type:"text", text:$t}] end'; }
-trap 'result aborted "$(text_so_far)"' TERM
 for word in $reply; do
     jq -nc --arg t "$word " '{type:"text_delta", text:$t}'
     said+="$word "

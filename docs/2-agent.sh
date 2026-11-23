@@ -2,11 +2,10 @@
 # Chapter 2: an agent. When an answer stops for tool_use, run each call, put
 # the results in one user message, and ask again, until it stops for anything
 # else. One thing at a time: while it works, nobody else can.
-#   story/2-agent [session.jsonl] [provider/model]
-here=$(cd "$(dirname "$0")/.." && pwd)
-session=${1:-session.jsonl} model=${2:-echo}
-provider=$here/providers/${model%%/*}
-[[ -x $provider ]] || provider=${AKERN_HOME:-$HOME/.akern}/system/providers/${model%%/*}
+#   docs/2-agent.sh [session.jsonl]     BADBOT_PROVIDER, BADBOT_MODEL: as for badbot
+badbot=$(cd "$(dirname "$0")/../badbot" && pwd) # the providers, and tools.json
+session=${1:-session.jsonl}
+provider=$badbot/${BADBOT_PROVIDER:-openai}.sh
 
 # The session to the provider; its text to the screen, its message to the file.
 ask() {
@@ -18,7 +17,7 @@ ask() {
                 jq -c '{type:"message", message}' <<<"$line" >>"$session"
                 stop=$(jq -r .stop <<<"$line") ;;
         esac
-    done < <(jq -sc --arg m "${model#*/}" --slurpfile t "$here/tools.json" '{model:$m,
+    done < <(jq -sc --arg m "${BADBOT_MODEL-}" --slurpfile t "$badbot/tools.json" '{model:$m,
         messages:map(select(.type == "message").message), tools:($t[0] | map(del(.program)))}' \
         "$session" | "$provider")
     echo
