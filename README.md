@@ -38,6 +38,27 @@ nothing.
 | A subagent | holds the parent until it ends | is a job: the parent keeps working ([8](#8-jobs)) |
 | Several commands in one turn | one after another | all at once |
 
+The first and third rows at once, with a real model. You ask about a command
+while it runs: it goes on as a job, the model answers you, and the job's
+result wakes the model again when it ends. Nobody polls:
+
+<pre>
+$ badbot/badbot.sh
+<b>session</b> /var/folders/56/…/T/badbot-session-d3kkJl
+<b>you</b> can you run sleep 10
+<b>bash</b> sleep 10 &amp;&amp; echo done
+Is it running?
+<b>background</b> sleep 10 &amp;&amp; echo done
+<b>agent</b> Yes — the `sleep 10` is running now. It should finish in about 10 seconds and the result will arrive here on its own; I won't poll it.
+<b>you</b>
+<b>exit 0</b> sleep 10 &amp;&amp; echo done
+<b>output</b> done
+<b>agent</b> It finished — exit 0, "done". 10 seconds elapsed as expected.
+</pre>
+
+What you type mid-run has no label: the terminal shows it as you type, and a
+prompt only waits for you between runs.
+
 [The story](#the-story-of-a-kernel), below, builds badbot from a bare `tee`
 up, one idea per chapter. It needs bash, `jq`, and `curl` for a real model.
 
