@@ -1,7 +1,7 @@
 [
   {
     "name": "shell",
-    "description": "Run a command with bash, stdout and stderr together. The result's first line is [exit N] or [signal N]; the output follows. Each call is a fresh shell in the working directory. You get the result when the command ends, unless wait runs out or a message arrives first: then it goes on as a job, and its result arrives later as a message of its own.",
+    "description": "Run a command with bash, stdout and stderr together. The result's first line is [exit N], or [killed] if it was stopped; the output follows. Each call is a fresh shell in the working directory. You get the result when the command ends, unless wait runs out or a message arrives first: then it goes on as a job, and its result arrives later as a message of its own.",
     "input_schema": {
       "type": "object",
       "properties": {

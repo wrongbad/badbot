@@ -23,7 +23,7 @@ output goes to; look at it with `tail -n 50`. When there is nothing else to
 do, end your turn: the job's result arrives as a message and starts a new
 one. Do not poll or sleep.
 EOF
-printf '\n%s\n' "A subagent is a job too: \`$(cd "$(dirname "$0")" && pwd)/badbot.sh \"its task\" </dev/null\`
+printf '\n%s\n' "A subagent is a job too: \`echo \"its task\" | $(cd "$(dirname "$0")" && pwd)/badbot.sh\`
 with \`\"wait\": 0\` runs another agent like you, beside you; what it says is its
 result. Give it a task that stands alone, and go on with your own."
 

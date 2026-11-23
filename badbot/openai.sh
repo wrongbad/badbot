@@ -52,10 +52,12 @@ while IFS= read -r line; do
 done < <(jq -nRc --unbuffered <&"$sse" '
     def stop: {stop:"end_turn", tool_calls:"tool_use", function_call:"tool_use",
                length:"max_tokens", content_filter:"refusal"}[.] // .;
-    foreach (inputs, null) as $l ({text:"", calls:[], stop:null, usage:null, err:""};
+    foreach ((inputs | rtrimstr("\r")), null) as $l ({text:"", calls:[], stop:null, usage:null, err:""};
         .emit = []
         | if $l == null then
-            .emit = [{type:"result", stop, error:((.err | fromjson? | .error.message) // (.err | rtrimstr("\n"))),
+            ([.calls[] | select(. != null)] | length > 0) as $calls # some servers say "stop" with calls
+            | .emit = [{type:"result", stop:(if .stop == "end_turn" and $calls then "tool_use" else .stop end),
+                error:((.err | fromjson? | .error | if type == "object" then .message else . end) // (.err | rtrimstr("\n"))),
                 message:{role:"assistant", content:(
                     [if .text != "" then {type:"text", text:.text} else empty end]
                     + [.calls[] | select(. != null) | {type:"tool_use", id, name,
@@ -63,15 +65,17 @@ done < <(jq -nRc --unbuffered <&"$sse" '
                 usage:(.usage | {input:((.prompt_tokens // 0) - (.prompt_tokens_details.cached_tokens // 0)),
                     output:(.completion_tokens // 0), cache_read:(.prompt_tokens_details.cached_tokens // 0),
                     cache_write:0})}]
-          elif $l | startswith("data: {") then
-            (($l[6:] | fromjson?) // {}) as $c
+          elif $l | test("^data: ?\\{") then
+            (($l | sub("^data: ?"; "") | fromjson?) // {}) as $c
             | if $c.error then .err += ($c.error | if type == "object" then .message // tojson else tostring end)
               else
                 ($c.choices[0]? // {}) as $ch
                 | ($ch.delta.content // "") as $t
                 | if $t != "" then .text += $t | .emit += [{type:"text_delta", text:$t}] else . end
-                | reduce ($ch.delta.tool_calls // [])[] as $tc (.;
-                    .calls[$tc.index // 0] |= ((. // {id:"", name:"", arguments:""})
+                | reduce ($ch.delta.tool_calls // [])[] as $tc (.; # by index; without one, by id, or the last
+                    ($tc.index // (if $tc.id then [.calls[] | .id?] | index($tc.id) // length else null end)
+                        // ([(.calls | length) - 1, 0] | max)) as $i
+                    | .calls[$i] |= ((. // {id:"", name:"", arguments:""})
                         | .id = ($tc.id // .id) | .name = ($tc.function.name // .name)
                         | .arguments += ($tc.function.arguments // "")))
                 | if $ch.finish_reason then .stop = ($ch.finish_reason | stop) else . end

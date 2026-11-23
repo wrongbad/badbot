@@ -23,7 +23,7 @@ text=$(jq -r 'map(select(.type == "text").text) | last // ""' <<<"$last")
 tool=$(jq -r '[.[] | select(.type == "tool_result") | .content[0].text | split("\n")[0]] | first // ""' <<<"$last")
 
 if [[ $text == '!'* ]]; then
-    result tool_use "$(jq -nc --arg t "${text#!}" --arg p $$ '
+    result tool_use "$(jq -nc --arg t "${text#!}" --arg p "$$$RANDOM" '
         [if $t | startswith("@") then $t else $t | split(";")[] | ltrimstr(" ") end] | to_entries | map({type:"tool_use", id:"tu_\($p)_\(.key + 1)"} +
           if .value | startswith("@")
           then .value[1:] | capture("^(?<name>\\S+)\\s*(?<input>.*)$")
