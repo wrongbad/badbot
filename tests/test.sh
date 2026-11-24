@@ -140,7 +140,7 @@ call() { printf '!@shell %s' "$(jq -nc "$@")"; }
 
 # ---------------------------------------------------------------- tests
 TESTS_ALL=(chat tools status job barge abort abort_tree abort_jobs bad_send resume
-    sigint sighup sigterm big media actors nobus ids subagent killtree skills settings settings_env usage
+    sigint sighup sigterm big media actors nobus ids subagent killtree skills settings settings_env usage replace killtree_sh
     openai_text openai_tools openai_noindex openai_stopcalls openai_401 openai_strerror
     openai_nospace openai_crlf openai_sigterm openai_request openai_kernel openai_list
     anthropic_text anthropic_tools anthropic_401 anthropic_retry anthropic_midstream
@@ -378,6 +378,47 @@ t_usage() { # /usage: the last turn's usage, as is; shown as the context it adds
     grep -qx 'usage context 35' s.stdout || fail "context 35 not shown: $(grep usage s.stdout)"
 }
 
+t_killtree_sh() { # killtree is a command: a shell with no bash functions can run it
+    kernel s
+    type_ "$(call --arg c 'bash -c "sleep 30; :" & p=$!; env -i PATH="$PATH" /bin/sh -c "killtree $p"; wait $p; echo "status $?"' '{command:$c}')"
+    wait_for s '.type == "block"' 10
+    finish
+    check s 'of("block")[0].block.content | text | contains("status 143")' \
+        "the sleep was not killed: $(get s 'of("block")[0].block.content | text')"
+}
+
+t_replace() { # verbatim, whole lines, once or --all, in place; and on every call's PATH
+    local r=$BADBOT/bin/replace
+    printf 'a\nkeep $HOME `x` & \\n "q" '"'"'s'"'"'\nb & c\nend\n\n' >f
+    "$r" f 3<<'O' 4<<'N' >out || fail "replace failed: $(<out)"
+keep $HOME `x` & \n "q" 's'
+O
+NEW: $PATH & \t "it's" ${x//y/z} *?[ %s
+two lines
+N
+    cmp -s f <(printf '%s\n' a 'NEW: $PATH & \t "it'"'"'s" ${x//y/z} *?[ %s' 'two lines' 'b & c' end '') ||
+        fail "not replaced verbatim: $(od -c f)"
+    [[ $(sed -n 2p out) == "     2	NEW: \$PATH & \\t \"it's\" \${x//y/z} *?[ %s" ]] || fail "not the numbered lines: $(<out)"
+    cp f f0
+    ! "$r" f 3< <(printf '&') 4< <(printf x) 2>err && grep -q 'more than once' err && cmp -s f f0 ||
+        fail "two matches, no --all: $(<err)"
+    ! "$r" f 3<<<'zzz' 4<<<'x' 2>err && grep -q 'not found' err || fail "no match: $(<err)"
+    ! "$r" f 2>err && grep -q 'fd 3' err || fail "no fds: $(<err)"
+    "$r" f --all 3< <(printf '&') 4< <(printf AND) >out && [[ $(head -n 1 out) == "replaced 2; the first:" ]] &&
+        [[ $(grep -c AND f) == 2 ]] || fail "--all: $(<out)"
+    printf 'a\nb\nc\n' >g && "$r" g 3<<<$'a\nb' 4</dev/null >/dev/null && [[ $(<g) == c ]] || fail "lines not deleted: $(od -c g)"
+    seq 1 200000 >big
+    now; local t0=$NOW
+    "$r" big 3<<<199999 4<<<X >/dev/null && cmp -s big <(seq 1 200000 | sed 's/^199999$/X/') || fail "big file: not replaced"
+    now; ((NOW - t0 < 5000)) || fail "big file: $((NOW - t0)) ms"
+    printf 'x = 1\n' >k
+    kernel s
+    type_ "$(call --arg c "replace $T/k 3<<'O' 4<<'N'"$'\nx = 1\nO\nx = 2\nN' '{command:$c}')"
+    wait_for s '.type == "run_end"'
+    finish
+    [[ $(<k) == 'x = 2' ]] || fail "a call could not run replace: $(get s 'of("block") | tojson')"
+}
+
 # Ctrl-C, SIGHUP, SIGTERM: the kernel's process group, with a call and a long timer running.
 signal_test() {
     kernel s
@@ -552,7 +593,7 @@ t_killtree() { # the job's note says how to stop it, and that stops all of it: a
     until_ 15 lines 1 pids || fail "the subagent's call did not start"
     stop=$(get s '[of("message")[] | .message.content[]? | text | capture("To stop it: (?<k>.*)\\]$").k][0] // ""')
     [[ $stop == killtree* ]] || fail "the job's note does not say how to stop it"
-    type_ "!$stop" # a call of its own: killtree is in every call's bash
+    type_ "!$stop" # a call of its own: killtree is on every call's PATH
     wait_for s '.type == "message" and (.message.content | tostring | contains("[the job"))'
     until_ 5 pids_gone pids || fail "the subagent's sleep still runs"
     no_sub() { ! pgrep -f "$T/sub" >/dev/null; }
@@ -959,6 +1000,7 @@ run_test() {
     trap 'pgs=$(cat "$T/pgids" 2>/dev/null); for pg in $pgs; do kill -KILL -- "-$pg" 2>/dev/null; done' EXIT
     cd "$T" || exit 1
     mkfifo nap && exec {NAP}<>nap && rm nap || exit 1
+    declare -F "t_$1" >/dev/null || fail "no function t_$1"
     "t_$1"
     exit 0
 }

@@ -23,7 +23,7 @@ last=$(grep '^{"type":"settings"' "$session" 2>/dev/null | tail -n 1)
 
 # A call's files: $c.out (stdout and stderr), $c.pid, $c.status, and $c.killed,
 # which kill_call leaves in case the call has not started yet: whichever of the
-# two comes second does the killing, with killtree (lib.sh).
+# two comes second does the killing, with killtree (bin/).
 kill_call() {
     local c
     c=$(calls "$1")

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# killtree PID...: ends each process and everything it started. The whole tree
+# gets SIGTERM, parents first, so none starts another, and 2 seconds on,
+# SIGKILL: what was in it, even if deaf to SIGTERM or orphaned since. A command,
+# not a function, so anything can run it: a call, any shell, any program.
+pids=("$@")
+(($#)) || { echo "usage: killtree PID..." >&2; exit 2; }
+kill -0 "$@" || exit
+for ((i = 0; i < ${#pids[@]}; i++)); do pids+=($(pgrep -P "${pids[i]}")); done
+kill -TERM "${pids[@]}" 2>/dev/null
+{ sleep 2; kill -KILL "${pids[@]}"; } >/dev/null 2>&1 &

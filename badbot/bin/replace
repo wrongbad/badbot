@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# replace FILE [--all] 3<<'OLD' 4<<'NEW': in FILE, the text on fd 3 becomes the
+# text on fd 4, verbatim: nothing in either is special, so with quoted heredocs
+# nothing needs escaping. Verbatim includes the newline a heredoc ends with: give
+# whole lines (an empty NEW deletes them). For part of a line, printf it:
+# 3< <(printf %s 'x = 1'). OLD must occur exactly once, or with --all, at least
+# once. Prints the lines around the first change, numbered; nothing changes if
+# it fails.
+#   replace f.c 3<<'OLD' 4<<'NEW'
+#   int x = 1;
+#   OLD
+#   int x = 2;
+#   NEW
+usage() { echo "usage: replace FILE [--all] 3<<'OLD' 4<<'NEW'" >&2; exit 2; }
+[[ $# == 1 || $# == 2 && $2 == --all ]] || usage
+file=$1 all=${2:+1}
+{ : <&3 && : <&4; } 2>/dev/null || { echo "replace: OLD goes on fd 3, NEW on fd 4" >&2; usage; }
+[[ -f $file ]] || { echo "replace: $file: no such file" >&2; exit 1; }
+[[ -w $file ]] || { echo "replace: $file: not writable" >&2; exit 1; }
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/replace.XXXXXX") || exit 1
+trap 'rm -rf -- "$tmp"' EXIT
+cat <&3 >"$tmp/old" && cat <&4 >"$tmp/new" || exit 1
+
+# awk reads each file as one record (RS is \001, which text hardly has; if it
+# does, the records are joined back with it), and finds OLD with index(): a
+# literal search, nothing in it a pattern. It writes the new text, and says on
+# stderr why not; on stdout, how many and the first one's lines: FIRST LAST N.
+# --all copies what is left after each match: fine for tens of matches in a
+# megabyte, slow for many thousands.
+awk -v all="$all" -v out="$tmp/out" '
+    BEGIN { RS = "\001" }
+    function slurp(f,    s, r, n) {
+        while ((r = (getline line < f)) > 0) s = s (n++ ? RS : "") line
+        if (r < 0) { print "replace: cannot read " f > "/dev/stderr"; exit 1 }
+        close(f)
+        return s
+    }
+    function lines(s,    a) { return s == "" ? 0 : split(s, a, "\n") - 1 } # newlines in s: gsub is slow
+    BEGIN {
+        text = slurp(ARGV[1]); old = slurp(ARGV[2]); new = slurp(ARGV[3])
+        if (old == "") { print "replace: OLD is empty" > "/dev/stderr"; exit 1 }
+        n = length(old)
+        i = index(text, old)
+        if (!i) { print "replace: " ARGV[1] ": OLD not found" > "/dev/stderr"; exit 1 }
+        first = lines(substr(text, 1, i - 1)) + 1
+        printf "%s", "" > out
+        count = 0; rest = text
+        while ((i = index(rest, old)) > 0) {
+            if (count == 1 && !all) {
+                print "replace: " ARGV[1] ": OLD occurs more than once (--all replaces every one)" > "/dev/stderr"
+                exit 1
+            }
+            printf "%s%s", substr(rest, 1, i - 1), new > out
+            rest = substr(rest, i + n)
+            count++
+        }
+        printf "%s", rest > out
+        close(out)
+        print first, first + lines(new) - (new ~ /\n$/), count
+        exit 0
+    }' "$file" "$tmp/old" "$tmp/new" >"$tmp/where" || exit 1
+read -r first last count <"$tmp/where"
+cat "$tmp/out" >"$file" || exit 1 # in place: the file keeps its mode, links and owner
+((count > 1)) && echo "replaced $count; the first:"
+awk -v a=$((first > 3 ? first - 3 : 1)) -v b=$((last + 3)) \
+    'NR > b { exit } NR >= a { printf "%6d\t%s\n", NR, $0 }' "$file"

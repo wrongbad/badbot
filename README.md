@@ -547,25 +547,22 @@ a provider that finished just before it was stopped, gets its `cancel` as it
 arrives. **One actor decides; the others hear decisions in order.**
 
 Killing a call has to kill everything it started, so the tools kill it as a
-tree, with `killtree` from `lib.sh`. It lists the tree first, parents before
-children, then sends the whole list `SIGTERM`, and two seconds later
+tree, with [`killtree`](badbot/bin/killtree). It lists the tree first, parents
+before children, then sends the whole list `SIGTERM`, and two seconds later
 `SIGKILL`: whatever was in it, deaf to `SIGTERM` or orphaned since, goes.
 
 ```bash
-killtree() {
-    local pids=("$@") i
-    kill -0 "$@" || return
-    for ((i = 0; i < ${#pids[@]}; i++)); do pids+=($(pgrep -P "${pids[i]}")); done
-    kill -TERM "${pids[@]}" 2>/dev/null
-    { sleep 2; kill -KILL "${pids[@]}"; } >/dev/null 2>&1 &
-}
-export -f killtree
+pids=("$@")
+kill -0 "$@" || exit
+for ((i = 0; i < ${#pids[@]}; i++)); do pids+=($(pgrep -P "${pids[i]}")); done
+kill -TERM "${pids[@]}" 2>/dev/null
+{ sleep 2; kill -KILL "${pids[@]}"; } >/dev/null 2>&1 &
 ```
 
-`export -f` puts the function in the environment, so every call's `bash`
-has it too, and the model can stop a job itself, a sub-agent included: a
-`kill` of one pid would stop only that process, and leave a pipeline's others,
-or a sub-agent's actors, running.
+It is a command in `badbot/bin`, which `lib.sh` puts first on the `PATH`, so
+every call has it too, from any shell or program, and the model can stop a job
+itself, a sub-agent included: a `kill` of one pid would stop only that process,
+and leave a pipeline's others, or a sub-agent's actors, running.
 
 The call's `.killed` file closes a race: a `cancel` that arrives before the
 call has started leaves the file, the call sees it, and kills itself.
@@ -651,7 +648,9 @@ built to be read, not to be fast, and where it is weaker, plainly:
 - **The session keeps the deltas.** It is the whole bus, as `tee` saw it,
   every streamed piece of text as well as the message it adds up to.
 - **One tool, text only.** `shell` is the only tool, results are text, and
-  there is no way to write to a job's stdin. A provider is started fresh each
+  there is no way to write to a job's stdin. Edits are a command too,
+  [`replace`](badbot/bin/replace), with the text in quoted heredocs, so that
+  nothing in it needs escaping. A provider is started fresh each
   turn, with the whole conversation (`claudecode` keeps its `claude` between
   turns, so that Claude Code's prompt cache holds, and gives it only what is new).
 
