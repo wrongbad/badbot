@@ -1,9 +1,9 @@
 # show.jq: the event stream as a person reads it: badbot.sh's stdout, by show.sh.
 # The raw events are in the session file. Run with -nR and $tty (true: color).
 # It remembers whether a person types at a terminal (hello says), each call's
-# command, to name it again when its result comes, and whether the agent is
-# mid-line, or a prompt is waiting, to end that line before anything else. A
-# line that is not JSON is skipped, not fatal.
+# command, to name it again when its result comes, whether a run is open, and
+# whether the agent is mid-line, or a prompt is waiting, to end that line
+# before anything else. A line that is not JSON is skipped, not fatal.
 #
 # What a person types, the terminal shows as they type it, so it gets a prompt,
 # when a run ends, rather than a label: typed mid-run, it has neither. What is
@@ -36,6 +36,13 @@ def tool: if .input.command then "bash" else .name end;
 
 def prompt: blue("you");
 
+# a setting's value: "" is the provider's default
+def value($v; $default): if $v != "" then $v elif $default != "" then "default (\($default))" else "default" end;
+
+# strings, two spaces apart, in lines of at most $w characters, indented
+def pack($w): reduce .[] as $c ([]; if length > 0 and (.[-1] | length) + 2 + ($c | length) <= $w
+    then .[-1] += "  " + $c else . + [$c] end) | map("      " + . + "\n") | add // "";
+
 # a send's content as text: a string, or its text blocks, with [type] for others
 def said:
   if type == "string" then .
@@ -44,7 +51,7 @@ def said:
         elif .type then "[\(.type)]" else empty end) | join(" ")
   else "" end;
 
-foreach (inputs | fromjson? // empty) as $e ({calls: {}, early: {}, open: false, bol: true, prompt: false, typing: false, out: ""};
+foreach (inputs | fromjson? // empty) as $e ({calls: {}, early: {}, open: false, bol: true, prompt: false, typing: false, run: false, out: ""};
   .out = ""
   | if $e.type == "text_delta" then
       .out = (if .open then "" else cyan("agent") end) + $e.text
@@ -55,6 +62,15 @@ foreach (inputs | fromjson? // empty) as $e ({calls: {}, early: {}, open: false,
        elif $e.type == "send" then
          if .typing then .prompt = false # the terminal ended the line, with Enter
          else ($e.content | said) as $s | if $s == "" then . else .out = blue("you") + $s + "\n" end end
+       elif ($e.type == "set" or $e.type == "list") and .typing then .prompt = false
+       elif $e.type == "settings" then
+         .out = green("using") + "\($e.provider), model \(value($e.model; "")), effort \(value($e.effort; ""))\n"
+       elif $e.type == "options" then
+         .out = green($e.key) + (if $e.key == "provider" then "" else "\($e.provider): " end)
+                + value($e.current; $e.default) + "; choose with /\($e.key) NAME, or default\n"
+                + ($e.choices | map(if . == $e.current then . + "*" else . end) | if . == [] then ["(none to list)"] else . end | pack(100))
+       elif $e.type == "run_start" then .run = true
+       elif $e.type == "run_end" then .run = false | if $e.reason != "done" then .out = yellow($e.reason) + "\n" else . end
        elif $e.type == "tool_start" then
          .calls[$e.call] = ($e | command)
          | .out = green($e | tool) + ($e | command) + "\n"
@@ -69,7 +85,6 @@ foreach (inputs | fromjson? // empty) as $e ({calls: {}, early: {}, open: false,
                   + (.calls[$e.call] // $e.block.name) + "\n"
                   + ($e.block.content | if type == "array" then output($e.preview) else "" end)
        elif $e.type == "turn_end" and $e.stop == "aborted" then .out = yellow("stopped") + "\n"
-       elif $e.type == "run_end" and $e.reason != "done" then .out = yellow($e.reason) + "\n"
        elif $e.type == "error" then .out = red("error") + $e.message + "\n"
        else . end)
       # the agent's line ends before anything else is shown, and with its turn
@@ -79,6 +94,10 @@ foreach (inputs | fromjson? // empty) as $e ({calls: {}, early: {}, open: false,
     end
   # a waiting prompt's line ends before anything else is shown, or at exit
   | if .prompt and (.out != "" or $e.type == "exit") then .out = "\n" + .out | .prompt = false else . end
-  # and a new one waits when the kernel starts, and when a run ends
-  | if ($e.type == "hello" or $e.type == "run_end") and .typing then .out += prompt | .prompt = true else . end;
+  # and a new one waits when the kernel starts, when a run ends, and when a
+  # command typed between runs is answered
+  | if .typing and ($e.type == "hello" or $e.type == "run_end"
+        or (.run | not) and ($e.type == "settings" or $e.type == "options"
+            or $e.type == "error" and ($e.where == "set" or $e.where == "list" or $e.where == "command")))
+    then .out += prompt | .prompt = true else . end;
   .out)

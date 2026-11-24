@@ -161,6 +161,14 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    def do_GET(self):  # a list of models: openai's /models, anthropic's /v1/models
+        scenario = self.path.strip("/").split("/")[0]
+        with open(os.path.join(DIR, "get-%s" % scenario), "w") as f:
+            f.write(self.path + "\n" + (self.headers.get("Authorization", "") or self.headers.get("x-api-key", "")))
+        if scenario == "unauthorized":
+            return self.plain(401, {"error": {"message": "Incorrect API key provided: sk-test"}})
+        self.plain(200, {"data": [{"id": "b"}, {"id": "a"}]})
+
     def anthropic(self, scenario):
         with open(os.path.join(DIR, "beta-%s" % scenario), "w") as f:
             f.write(self.headers.get("anthropic-beta", ""))

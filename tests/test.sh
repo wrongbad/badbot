@@ -16,7 +16,7 @@ TESTS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(dirname "$TESTS")
 BADBOT=$REPO/badbot
 exec 3>&- 4>&- # a kernel's fds, if this runs in one
-unset BADBOT_SESSION BADBOT_MODEL OPENAI_API_KEY OPENAI_BASE_URL OPENAI_MODEL \
+unset BADBOT_SESSION BADBOT_MODEL BADBOT_EFFORT OPENAI_API_KEY OPENAI_BASE_URL OPENAI_MODEL \
     ANTHROPIC_API_KEY ANTHROPIC_BASE_URL ANTHROPIC_MODEL
 export BADBOT_PROVIDER=echo NO_COLOR=1
 TIMEOUT=${TEST_TIMEOUT:-60} # seconds, for any one test
@@ -140,12 +140,12 @@ call() { printf '!@shell %s' "$(jq -nc "$@")"; }
 
 # ---------------------------------------------------------------- tests
 TESTS_ALL=(chat tools status job barge abort abort_tree abort_jobs bad_send resume
-    sigint sighup sigterm big media actors nobus ids subagent killtree skills
+    sigint sighup sigterm big media actors nobus ids subagent killtree skills settings
     openai_text openai_tools openai_noindex openai_stopcalls openai_401 openai_strerror
-    openai_nospace openai_crlf openai_sigterm openai_request openai_kernel
+    openai_nospace openai_crlf openai_sigterm openai_request openai_kernel openai_list
     anthropic_text anthropic_tools anthropic_401 anthropic_retry anthropic_midstream
-    anthropic_sigterm anthropic_request anthropic_kernel
-    claudecode_turns claudecode_restart claudecode_sigterm claudecode_noclaude claudecode_kernel)
+    anthropic_sigterm anthropic_request anthropic_kernel anthropic_list
+    claudecode_turns claudecode_restart claudecode_sigterm claudecode_noclaude claudecode_kernel claudecode_effort)
 
 t_chat() {
     kernel s
@@ -313,6 +313,37 @@ t_resume() {
     jq -e "[] as \$e | $JQDEFS"'.messages | map(.content | text) == ["hi", "echo: hi ", "again"]' s.d/request.json >/dev/null ||
         fail "request.json does not hold run one's context: $(jq -c '.messages' s.d/request.json)"
     check s 'of("message") | map(select(.source == "assistant"))[-1].message.content | text == "echo: again "' "no 'echo: again'"
+}
+
+t_settings() { # /provider, /model, /effort: listed, checked, set, asked for, and kept by the session
+    kernel s
+    type_ /provider
+    wait_for s '.type == "options" and .key == "provider"'
+    type_ '/model x' '/effort high' hi
+    wait_for s '.type == "run_end"'
+    jq -e '.model == "x" and .effort == "high"' s.d/request.json >/dev/null ||
+        fail "the request does not ask for model x, effort high: $(jq -c '{model, effort}' s.d/request.json)"
+    type_ '/provider claudecode' '/effort extreme' '/provider echo x' '/effort high' '/provider nope' '/model a b' '/Users/k is a path'
+    wait_for s '.type == "run_end" and .run == 2'
+    finish
+    valid s
+    check s 'of("options")[0] | .current == "echo" and .default == "openai"
+        and (.choices | index("anthropic") and index("claudecode") and index("echo") and index("openai") and (index("model") | not))' \
+        "the providers are not listed: $(get s 'of("options")[0] | tojson')"
+    check s 'of("settings") | map([.provider, .model, .effort]) == [["echo", "x", ""], ["echo", "x", "high"],
+        ["claudecode", "", ""], ["echo", "x", ""], ["echo", "x", "high"]]' "not the settings: $(get s 'of("settings") | tojson')"
+    check s 'of("error") | map(.message) | sort == (["claudecode has no effort extreme: low, medium, high, xhigh, max",
+        "no provider nope: /provider lists them", "/model: too many words"] | sort)' "not the errors: $(get s 'of("error") | tojson')"
+    check s 'of("send")[-1].content == "/Users/k is a path"' "a path was not sent"
+    BADBOT_MODEL=y BADBOT_EFFORT=low kernel s # resumed: the session's settings, over the environment's
+    type_ again
+    wait_for s '.type == "run_end" and .run == 3'
+    type_ /effort
+    wait_for s '.type == "options" and .key == "effort"'
+    finish
+    jq -e '.model == "x" and .effort == "high"' s.d/request.json >/dev/null ||
+        fail "resumed, the request does not ask for model x, effort high: $(jq -c '{model, effort}' s.d/request.json)"
+    check s 'of("options")[-1] | .provider == "echo" and .current == "high" and .choices == []' "echo lists efforts"
 }
 
 # Ctrl-C, SIGHUP, SIGTERM: the kernel's process group, with a call and a long timer running.
@@ -594,6 +625,19 @@ t_openai_request() {
             and .[0].function.parameters.required == ["command"])' "$MOCK_DIR/request-request.json" >/dev/null ||
         fail "the request is not in Chat Completions' terms: $(cat "$MOCK_DIR/request-request.json")"
 }
+t_openai_list() { # its models, sorted; its efforts; the effort asked for is reasoning_effort
+    OPENAI_BASE_URL=http://127.0.0.1:$MOCK_PORT/list OPENAI_API_KEY=sk-test OPENAI_MODEL=a \
+        "$BADBOT/openai.sh" --list model >out.json 2>err || fail "--list model exited $?: $(<err)"
+    jq -e '. == {choices:["a", "b"], default:"a"}' out.json >/dev/null || fail "not the models: $(<out.json)"
+    [[ $(<"$MOCK_DIR/get-list") == $'/list/models\nBearer sk-test' ]] || fail "not asked with the key: $(<"$MOCK_DIR/get-list")"
+    ! OPENAI_BASE_URL=http://127.0.0.1:$MOCK_PORT/unauthorized "$BADBOT/openai.sh" --list model >out.json 2>err ||
+        fail "--list model succeeded, unauthorized"
+    [[ $(<err) == "Incorrect API key provided: sk-test" ]] || fail "not the API's error: $(<err)"
+    "$BADBOT/openai.sh" --list effort | jq -e '.choices | index("low") and index("high")' >/dev/null || fail "no efforts"
+    openai effort "$(jq -c '.effort = "low"' <<<"$REQ")"
+    jq -e '.reasoning_effort == "low"' "$MOCK_DIR/request-effort.json" >/dev/null ||
+        fail "no reasoning_effort: $(cat "$MOCK_DIR/request-effort.json")"
+}
 t_openai_kernel() {
     BADBOT_PROVIDER=openai BADBOT_MODEL=test-model OPENAI_API_KEY=sk-test \
         OPENAI_BASE_URL=http://127.0.0.1:$MOCK_PORT/kernel kernel s
@@ -680,6 +724,16 @@ t_anthropic_request() {
         and (has("fallbacks") | not) and .output_config == {effort:"low"}' "$MOCK_DIR/request-a-request.json" >/dev/null ||
         fail "the request is not in the API's terms: $(cat "$MOCK_DIR/request-a-request.json")"
     [[ ! -s $MOCK_DIR/beta-a-request ]] || fail "a beta header without fallbacks: $(<"$MOCK_DIR/beta-a-request")"
+}
+t_anthropic_list() { # its models, in the API's order; its efforts; the effort asked for is output_config's
+    ANTHROPIC_BASE_URL=http://127.0.0.1:$MOCK_PORT/a-list ANTHROPIC_API_KEY=sk-test \
+        "$BADBOT/anthropic.sh" --list model >out.json 2>err || fail "--list model exited $?: $(<err)"
+    jq -e '. == {choices:["b", "a"], default:"claude-opus-5-5"}' out.json >/dev/null || fail "not the models: $(<out.json)"
+    [[ $(<"$MOCK_DIR/get-a-list") == $'/a-list/v1/models?limit=1000\nsk-test' ]] || fail "not asked with the key: $(<"$MOCK_DIR/get-a-list")"
+    "$BADBOT/anthropic.sh" --list effort | jq -e '.default == "high" and (.choices | index("max"))' >/dev/null || fail "no efforts"
+    anthropic a-effort "$(jq -c '.effort = "max"' <<<"$REQ")"
+    jq -e '.output_config == {effort:"max"}' "$MOCK_DIR/request-a-effort.json" >/dev/null ||
+        fail "not effort max: $(jq -c .output_config "$MOCK_DIR/request-a-effort.json")"
 }
 t_anthropic_kernel() {
     BADBOT_PROVIDER=anthropic BADBOT_MODEL=test-model ANTHROPIC_API_KEY=sk-test \
@@ -799,6 +853,18 @@ t_claudecode_kernel() {
     check log.jsonl '[$e[] | .mcp? // empty | select(.[0].method == "tools/call")][0][1].response.mcp_response.result.content[0].text
         == "[exit 0]\nfrom-the-tool\n"' "the call was not answered with the tool's output"
     [[ $(starts) == 1 ]] || fail "claude started $(starts) times, not once"
+}
+t_claudecode_effort() { # the request's effort is --effort, over params.effort; another effort, another claude
+    fake_claude "$(reply_text One.)" "$(reply_text Two.)"
+    local r1 r2
+    r1=$(jq -c --arg s "$T/s" '.session = $s | .effort = "max" | .params.effort = "low"' <<<"$CC_REQ")
+    claudecode "$r1"
+    r2=$(then_ "$r1" '{"role":"user","content":[{"type":"text","text":"again"}]}' | jq -c '.effort = "medium"')
+    claudecode "$r2"
+    check log.jsonl '[$e[] | .start? // empty | index("--effort") as $i | .[$i + 1]] == ["max", "medium"]' \
+        "not started with --effort max, then medium: $(grep start log.jsonl | cut -c1-300)"
+    "$BADBOT/claudecode.sh" --list model | jq -e '.choices == ["fable", "opus", "sonnet", "haiku"] and .default == ""' >/dev/null ||
+        fail "not claude's aliases"
 }
 
 # ---------------------------------------------------------------- runner

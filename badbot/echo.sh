@@ -5,8 +5,10 @@
 #   !ls; date               asks for two shell calls
 #   !@shell {"command":"sleep 5; echo up","wait":0}   one call, its input as given
 #   (a tool result)         "The tool said: <its first line>"
+# It has no models and no efforts to list: --list KEY lists none.
 # On SIGTERM it stops and gives back what it has said so far.
 set -f
+[[ ${1-} == --list ]] && { echo '{"choices":[],"default":""}'; exit; }
 result() { # STOP CONTENT
     jq -nc --arg stop "$1" --argjson content "$2" '{type:"result", stop:$stop,
         message:{role:"assistant", content:$content},

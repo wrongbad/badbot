@@ -6,6 +6,8 @@
 # (summarized), high effort, server-side fallbacks and prompt caching; the
 # request's params go over those, and a param set to null leaves its field out
 # ({"thinking":null,"output_config":null,"fallbacks":null} for an older model).
+# The request's effort, if any, is output_config's, over high.
+#   badbot/anthropic.sh --list model|effort     the choices: the API's models; the efforts
 # An overloaded or rate-limited API, a 5xx or a failed connection is tried
 # again, up to 4 times in all, 1, 2 and 4 s apart, unless text has come.
 # On SIGTERM it stops the request and gives back what it has said so far.
@@ -13,9 +15,24 @@ set -u
 here=$(cd "$(dirname "$0")" && pwd)
 stopped= child=
 trap 'stopped=1; [[ $child ]] && kill "$child" 2>/dev/null' TERM
-IFS= read -r request
 base=${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
 base=${base%/}
+
+if [[ ${1-} == --list ]]; then # {"choices":[…],"default":"…"}, or why not on stderr
+    case ${2-} in
+        model)
+            [[ $base == https://api.anthropic.com && ! ${ANTHROPIC_API_KEY-} ]] && { echo "ANTHROPIC_API_KEY is not set" >&2; exit 1; }
+            out=$(curl -sS --max-time 30 "$base/v1/models?limit=1000" -H 'anthropic-version: 2026-10-21' \
+                -H @<(printf 'x-api-key: %s\n' "${ANTHROPIC_API_KEY-}") 2>&1) || { echo "$out" >&2; exit 1; }
+            jq -ce --arg d "${ANTHROPIC_MODEL:-claude-opus-5-5}" '{choices:[.data[].id], default:$d}' <<<"$out" 2>/dev/null ||
+                { { jq -r '.error.message? // .error // "not a list of models" | tostring' <<<"$out" 2>/dev/null || echo "$out"; } >&2; exit 1; } ;;
+        effort) jq -nc '{choices:["low", "medium", "high", "xhigh", "max"], default:"high"}' ;;
+        *) echo "nothing to list for ${2-}" >&2; exit 1 ;;
+    esac
+    exit
+fi
+
+IFS= read -r request
 
 fail() { # MESSAGE: says it, and the result of a failed turn
     jq -nc --arg m "anthropic: $1" '{type:"error", where:"provider", message:$m},
@@ -32,6 +49,7 @@ body=$(jq -c -L "$here" --arg fallback "${ANTHROPIC_MODEL:-claude-opus-5-5}" 'in
     + (if (.tools // []) != [] then {tools:[.tools[] | {name, description, input_schema, eager_input_streaming:true}]} else {} end)
     + {thinking:{type:"adaptive", display:"summarized"}, output_config:{effort:"high"},
        fallbacks:"default", cache_control:{type:"ephemeral"}}
+    + (if (.effort // "") != "" then {output_config:{effort:.effort}} else {} end)
     + (.params // {})
     | with_entries(select(.value != null))' <<<"$request" 2>&1) || fail "${body#jq: error (at *): }"
 headers=('content-type: application/json' 'anthropic-version: 2026-10-21')

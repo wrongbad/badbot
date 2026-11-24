@@ -14,10 +14,12 @@ everyone.
 |---|---|---|---|
 | `hello` | `input`, first | `session`, `provider`, `model`, `typing` (stdin is a terminal: a person types, and gets a prompt) | shown: the session's path, to resume it |
 | `send` | `input` (a typed line), or a command | `content`: a string, or content blocks (objects with a `type`); `when`: `turn` (default) or `now` | queued in the inbox; with no content, an `error` instead |
+| `set` | `input` (a typed `/provider NAME [MODEL]`, `/model NAME`, `/effort LEVEL`; `default` is `""`), or a command | settings: `provider`, `model`, `effort`, each a string; `""` is the provider's default | `model` changes them, and says `settings`; a provider that differs starts with its defaults for the rest |
+| `list` | `input` (a typed `/provider`, `/model`, `/effort`), or a command | `key`: a setting | `model` says its choices: `options` |
 | `abort` | a command | `jobs`: `true` also kills jobs, whose results are then dropped | the inbox ends the run: provider stopped (`preempt`), calls killed (`cancel`), what was sent and is still queued handed back |
 | `eof` | `input`, at the end of stdin | | the kernel exits once nothing is left |
 | `exit` | `inbox` when done, or a command | | every actor stops; `input` stops following the bus |
-| `error` | `input` for a bad command; `inbox` for a `send` with nothing to send; `model` and providers | `where`, `message` | shown only |
+| `error` | `input` for a bad command; `inbox` for a `send` with nothing to send; `model` for a `set` or `list` it cannot do, and providers | `where`, `message` | shown only |
 
 ## Inbox
 
@@ -41,6 +43,8 @@ everyone.
 | `turn_start` | `run`, `turn` | `continue` |
 | `text_delta`, and anything else a provider writes | as the provider writes them | streaming; for display |
 | `message` | `source: assistant`; `run`, `turn`, `message` | the provider's `result`; `tool_use` blocks kept only when `stop` is `tool_use`; none when it has no content |
+| `settings` | `provider`, `model`, `effort` | a `set` changed them: what the next turn asks for. Resuming, the last one is what the session starts with, over the environment |
+| `options` | `key`, `provider`, `current`, `default`, `choices` | a `list`: the providers (the scripts whose second line says `# NAME: a provider`), or what the provider's `--list` printed |
 | `turn_end` | `run`, `turn`; `stop`: `end_turn`, `tool_use`, `max_tokens`, `aborted`, `error`…; `usage` | after the message; `error` when the provider gave no result, or one that does not read |
 
 ## Tools
@@ -71,7 +75,8 @@ also keeps in `S.d/request.json`:
 
 | Field | |
 |---|---|
-| `model` | `BADBOT_MODEL`, or `""` |
+| `model` | the setting: `BADBOT_MODEL`, `/model`, or `""` |
+| `effort` | the setting: `BADBOT_EFFORT`, `/effort`, or `""`, the provider's default |
 | `session` | the session file's path, `S` |
 | `system` | the system prompt: what [`badbot/system-prompt.sh`](../badbot/system-prompt.sh) printed |
 | `messages` | the conversation: `{"role":"user"\|"assistant","content":[…]}`, content blocks `text`, `tool_use` (`id`, `name`, `input`) and `tool_result` (`tool_use_id`, `content`, and `name`, `status`, `ran`) |
@@ -95,6 +100,19 @@ last, the one that counts:
 
 On `SIGTERM` it stops, and writes its `result` with `stop: aborted` and what it
 has so far. A provider that exits without a `result` ends the turn `error`.
+
+Its second line says it is one, `# NAME: a provider …`, so `/provider` lists it
+and may choose it. Run as `NAME.sh --list KEY`, it reads nothing, and prints
+the choices for a setting, `model` or `effort`, as
+`{"choices":[…],"default":"…"}`, or says why not on stderr and exits non-zero.
+A `set` of a choice other than a model must be one it lists, if it lists any.
+
+| Provider | `--list model` | `--list effort` | `effort` is |
+|---|---|---|---|
+| `openai` | the server's `GET /models`, sorted | `none` to `xhigh` | `reasoning_effort` |
+| `anthropic` | the API's `GET /v1/models` | `low` to `max` | `output_config.effort` (else `high`) |
+| `claudecode` | `fable`, `opus`, `sonnet`, `haiku` | `low` to `max` | `--effort` (else `params.effort`) |
+| `echo` | none | none | not used |
 
 A provider runs once per turn, but what it starts need not: `claudecode`
 keeps a `claude` process for the session in `S.d/claudecode`, and ends it when

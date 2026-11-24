@@ -102,6 +102,21 @@ lists them, and a script can send it commands, as JSON events, on stdin.
 |---|---|---|
 | `BADBOT_PROVIDER` | `openai` | [`openai`](badbot/openai.sh): any Chat Completions server, by `OPENAI_BASE_URL`; [`anthropic`](badbot/anthropic.sh): Anthropic's Messages API, by `ANTHROPIC_API_KEY` (and `ANTHROPIC_BASE_URL`); [`claudecode`](badbot/claudecode.sh): the `claude` CLI on your PATH, on your Claude subscription; [`echo`](badbot/echo.sh): a stand-in, no key needed, that echoes you, and asks for shell commands when a line starts with `!` |
 | `BADBOT_MODEL` | by provider | the model: for `openai`, `OPENAI_MODEL`; for `anthropic`, `ANTHROPIC_MODEL`, else `claude-opus-5-5`; for `claudecode`, an alias (`fable`, `opus`, `sonnet`, `haiku`) or an id, else Claude Code's default |
+| `BADBOT_EFFORT` | by provider | how hard the model thinks: for `anthropic` and `claudecode`, `low`, `medium`, `high`, `xhigh` or `max`; for `openai`, its `reasoning_effort` |
+
+In a session, `/provider`, `/model` and `/effort` list the choices, and with
+a name, choose one (`default`: the provider's own). `/provider NAME MODEL`
+does both, and a new provider starts with its own defaults. The next step asks
+for what was chosen, and the session keeps it: resumed, it goes on with it.
+`/model` asks `openai`'s server and Anthropic's API for their models.
+
+<pre>
+<b>you</b> /effort
+<b>effort</b> anthropic: default (high); choose with /effort NAME, or default
+      low  medium  high  xhigh  max
+<b>you</b> /effort max
+<b>using</b> anthropic, model default, effort max
+</pre>
 
 `anthropic` asks for adaptive thinking, high effort, server-side fallbacks and
 prompt caching, and retries an overloaded or rate-limited API before any text

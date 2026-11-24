@@ -12,6 +12,8 @@
 # The environment says the rest:
 #   BADBOT_PROVIDER  NAME runs NAME.sh, here; openai if unset (echo: no key needed)
 #   BADBOT_MODEL     the model the provider asks for
+#   BADBOT_EFFORT    how hard the model thinks: low, medium, high…; the provider's default if unset
+# A session keeps what /provider, /model and /effort chose, over these.
 
 exec 3>&- 4>&-             # fds 3 and 4 are the kernel's; anyone else's go
 export BADBOT_SESSION=${1:-$(mktemp "${TMPDIR:-/tmp}/badbot-session-XXXXXX")}

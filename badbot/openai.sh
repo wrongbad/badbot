@@ -2,13 +2,30 @@
 # openai: a provider for OpenAI's Chat Completions API, or any server that
 # speaks it (OPENAI_BASE_URL: Ollama, vLLM, OpenRouter, …). Streams the reply.
 #   BADBOT_PROVIDER=openai BADBOT_MODEL=gpt-5 badbot/badbot.sh     needs OPENAI_API_KEY for api.openai.com
-# The model is BADBOT_MODEL, else OPENAI_MODEL.
+# The model is BADBOT_MODEL, else OPENAI_MODEL; the request's effort is its
+# reasoning_effort.
+#   badbot/openai.sh --list model|effort     the choices: the server's models; the efforts
 # On SIGTERM it stops the request and gives back what it has said so far.
 set -u
+base=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+
+if [[ ${1-} == --list ]]; then # {"choices":[…],"default":"…"}, or why not on stderr
+    case ${2-} in
+        model)
+            [[ $base == https://api.openai.com/* && ! ${OPENAI_API_KEY-} ]] && { echo "OPENAI_API_KEY is not set" >&2; exit 1; }
+            out=$(curl -sS --max-time 30 "$base/models" -H @<(printf 'Authorization: Bearer %s\n' "${OPENAI_API_KEY-}") 2>&1) ||
+                { echo "$out" >&2; exit 1; }
+            jq -ce --arg d "${OPENAI_MODEL-}" '{choices:([.data[].id] | sort), default:$d}' <<<"$out" 2>/dev/null ||
+                { { jq -r '.error.message? // .error // "not a list of models" | tostring' <<<"$out" 2>/dev/null || echo "$out"; } >&2; exit 1; } ;;
+        effort) jq -nc '{choices:["none", "minimal", "low", "medium", "high", "xhigh"], default:""}' ;;
+        *) echo "nothing to list for ${2-}" >&2; exit 1 ;;
+    esac
+    exit
+fi
+
 stopped= curl=
 trap 'stopped=1; [[ $curl ]] && kill "$curl" 2>/dev/null' TERM
 IFS= read -r request
-base=${OPENAI_BASE_URL:-https://api.openai.com/v1}
 
 fail() { # MESSAGE: says it, and the result of a failed turn
     jq -nc --arg m "openai: $1" '{type:"error", where:"provider", message:$m},
@@ -42,6 +59,7 @@ body=$(jq -c --arg fallback "${OPENAI_MODEL-}" '
                    elif $text != "" then {role:"user", content:$text} else empty end
              end])}
     + if .tools then {tools:[.tools[] | {type:"function", function:{name, description, parameters:.input_schema}}]} else {} end
+    + if (.effort // "") != "" then {reasoning_effort:.effort} else {} end
     + .params' <<<"$request" 2>&1) || fail "${body#jq: error (at *): }"
 [[ $stopped ]] && { jq -nc '{type:"result", stop:"aborted", message:{role:"assistant", content:[]}}'; exit 0; }
 

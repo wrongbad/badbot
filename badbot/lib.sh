@@ -7,6 +7,7 @@
 # the environment says the rest (BADBOT_SESSION set means: in a kernel):
 #   BADBOT_SESSION  the session file    BADBOT_PROVIDER  NAME: NAME.sh
 #                                      BADBOT_MODEL     the model it asks for
+#                                      BADBOT_EFFORT    how hard it thinks
 # Run alone, an actor needs none of them: fd 3 is stdout, with a lock of its
 # own, and the session is a scratch one, removed at exit.
 
@@ -14,7 +15,7 @@
 set -u
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) # badbot/: every script, side by side
 tmp=${TMPDIR:-/tmp}
-provider=${BADBOT_PROVIDER:-openai} model=${BADBOT_MODEL-}
+provider=${BADBOT_PROVIDER:-openai} model=${BADBOT_MODEL-} effort=${BADBOT_EFFORT-}
 
 # pipe FD: an anonymous pipe in fd FD, open for reading and writing. The fifo
 # is unlinked at once: nothing to clean up, nothing anyone else can open.

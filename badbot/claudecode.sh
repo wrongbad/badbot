@@ -2,8 +2,9 @@
 # claudecode: a provider that asks Claude Code, through the claude CLI on PATH,
 # on the user's Claude subscription. It never touches Claude Code's credentials.
 #   BADBOT_PROVIDER=claudecode badbot/badbot.sh     BADBOT_MODEL: fable, opus, sonnet, haiku, or an id
-# Without BADBOT_MODEL, claude picks. params.effort is --effort, and
-# params.max_tokens CLAUDE_CODE_MAX_OUTPUT_TOKENS.
+# Without BADBOT_MODEL, claude picks. The request's effort (else params.effort)
+# is --effort, and params.max_tokens CLAUDE_CODE_MAX_OUTPUT_TOKENS.
+#   badbot/claudecode.sh --list model|effort     the choices: claude's aliases; its efforts
 #
 # One claude (claude -p, stream-json) per session, kept between turns: Claude
 # Code continues a conversation's prompt cache only from its own previous
@@ -27,6 +28,14 @@
 # On SIGTERM it stops claude, and gives back what it has said so far.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
+if [[ ${1-} == --list ]]; then # {"choices":[…],"default":"…"}: "" is claude's choice
+    case ${2-} in
+        model) jq -nc '{choices:["fable", "opus", "sonnet", "haiku"], default:""}' ;;
+        effort) jq -nc '{choices:["low", "medium", "high", "xhigh", "max"], default:""}' ;;
+        *) echo "nothing to list for ${2-}" >&2; exit 1 ;;
+    esac
+    exit
+fi
 prefix=mcp__badbot__
 stopped= tail_pid=
 trap 'stopped=1; [[ $tail_pid ]] && kill "$tail_pid" 2>/dev/null' TERM
@@ -78,7 +87,7 @@ jq -n -L "$here" --arg p "$prefix" --argjson alive "$alive" --slurpfile req "$re
         else all(.type == "text" or (.type == "image" and .source.type == "base64")) end;
     $req[0] as $q | ($st[0] // {}) as $s
     | {model:($q.model // ""), system:($q.system // ""), tools:($q.tools // []),
-       effort:($q.params.effort // null), max_tokens:($q.params.max_tokens // null)} as $setup
+       effort:(if ($q.effort // "") != "" then $q.effort else $q.params.effort // null end), max_tokens:($q.params.max_tokens // null)} as $setup
     | ($q.messages | api_messages($p)) as $r
     | ($s.fed // [] | length) as $n
     | (if $alive and $s.setup == $setup and ($r | length) > $n and $r[:$n] == $s.fed then $r[$n:] else null end) as $tail
