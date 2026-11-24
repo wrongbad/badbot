@@ -33,8 +33,8 @@ deliver() {
     fi
     local content=() source=results
     for id in "${calls[@]}"; do # the answers first, in call order; a job's says where its output goes
-        [[ ${results[$id]-} ]] || results[$id]=$(jq -nc --arg id "$id" --arg out "$(calls "$id").out" '{type:"tool_result",
-            tool_use_id:$id, content:[{type:"text", text:"[a job now: its result comes later, in a message of its own. Its output: \($out)]"}]}')
+        [[ ${results[$id]-} ]] || results[$id]=$(jq -nc --arg id "$id" --arg c "$(calls "$id")" '{type:"tool_result",
+            tool_use_id:$id, content:[{type:"text", text:"[a job now: its result comes later, in a message of its own. Its output: \($c).out. To stop it: killtree $(<\($c).pid)]"}]}')
         content+=("${results[$id]}")
     done
     calls=() results=()

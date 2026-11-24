@@ -43,6 +43,7 @@ TEXT = [chunk({"role": "assistant", "content": ""}), chunk({"content": "Hel"}),
 # scenario: list of chunks, sent as SSE
 STREAMS = {
     "text": TEXT,
+    "kernel": TEXT,  # the same stream, for openai_kernel: its request is saved apart from openai_text's
     "nospace": TEXT,
     "crlf": TEXT,
     "tools": [

@@ -51,6 +51,19 @@ put() { say "$(jq -nc "${@:2}" "$1")"; }
 # join ITEM...: the items, comma-separated: JSON values into an array's insides.
 join() { local IFS=,; echo "$*"; }
 
+# killtree PID...: ends each process and everything it started. The whole tree
+# gets SIGTERM, parents first, so none starts another, and 2 seconds on,
+# SIGKILL: what was in it, even if deaf to SIGTERM or orphaned since. Exported,
+# so every call can run it too: on a job, a sub-agent, anything.
+killtree() {
+    local pids=("$@") i
+    kill -0 "$@" || return
+    for ((i = 0; i < ${#pids[@]}; i++)); do pids+=($(pgrep -P "${pids[i]}")); done
+    kill -TERM "${pids[@]}" 2>/dev/null
+    { sleep 2; kill -KILL "${pids[@]}"; } >/dev/null 2>&1 &
+}
+export -f killtree
+
 # bare CMD...: runs CMD, in place of this process, outside this kernel: without
 # the bus, its lock, or its session. A badbot it starts is a kernel of its own.
 bare() { BADBOT_SESSION= exec "$@" 3>&- 4>&-; }

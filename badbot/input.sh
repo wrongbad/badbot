@@ -19,7 +19,8 @@ typed() {
 }
 [[ ${scratch-} ]] && { typed; exit; } # run alone: no bus to follow
 
-put '{type:"hello",session:$s,provider:$p,model:$m}' --arg s "$session" --arg p "$provider" --arg m "$model"
+[[ -t 0 ]] && t=true || t=false # a person typing, at a terminal: show.jq gives them a prompt
+put '{type:"hello",session:$s,provider:$p,model:$m,typing:$t}' --arg s "$session" --arg p "$provider" --arg m "$model" --argjson t $t
 typed <&0 & # beside the bus, while it lasts
 typing=$!
 exec {bus}< <(exec tail -n +1 -f "$session.d/bus")

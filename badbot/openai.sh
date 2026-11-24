@@ -18,9 +18,12 @@ fail() { # MESSAGE: says it, and the result of a failed turn
 [[ $base == https://api.openai.com/* && ! ${OPENAI_API_KEY-} ]] && fail "OPENAI_API_KEY is not set"
 
 # The request, in Chat Completions' terms: a user message's tool results become
-# "tool" messages, its text one "user" message.
+# "tool" messages, its text one "user" message. A tool message holds only text,
+# so the images in tool results go in that user message, before its text.
 body=$(jq -c --arg fallback "${OPENAI_MODEL-}" '
     def text: map(select(.type == "text").text) | join("\n");
+    def images: [.[] | select(.type == "image" and .source.type == "base64")
+        | {type:"image_url", image_url:{url:"data:\(.source.media_type);base64,\(.source.data)"}}];
     .model = if .model != "" then .model else $fallback end
     | if .model == "" then error("no model: set BADBOT_MODEL or OPENAI_MODEL") else . end
     | {model, stream:true, stream_options:{include_usage:true},
@@ -31,8 +34,12 @@ body=$(jq -c --arg fallback "${OPENAI_MODEL-}" '
                    + if $calls == [] then {} else {tool_calls:[$calls[]
                        | {id, type:"function", function:{name, arguments:(.input | tojson)}}]} end
              else
-                 ($c[] | select(.type == "tool_result") | {role:"tool", tool_call_id:.tool_use_id, content:(.content | text)}),
-                 ($c | text | select(. != "") | {role:"user", content:.})
+                 ($c[] | select(.type == "tool_result") | {role:"tool", tool_call_id:.tool_use_id, content:(.content
+                     | text + if images != [] then "\n(its image is in the next user message)" else "" end)}),
+                 ([$c[] | select(.type == "tool_result") | .content[]] + $c | images) as $images
+                 | ($c | text) as $text
+                 | if $images != [] then {role:"user", content:($images + [$text | select(. != "") | {type:"text", text:.}])}
+                   elif $text != "" then {role:"user", content:$text} else empty end
              end])}
     + if .tools then {tools:[.tools[] | {type:"function", function:{name, description, parameters:.input_schema}}]} else {} end
     + .params' <<<"$request" 2>&1) || fail "${body#jq: error (at *): }"

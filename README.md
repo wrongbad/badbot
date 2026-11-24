@@ -4,7 +4,7 @@ An agent in bash, built as a concurrent actor bus: one pipeline of small
 programs, each reacting to the session events it cares about.
 
 ```bash
-input.sh | inbox.sh | model.sh | tools.sh | tee -a "$session" | jq -f show.jq
+input.sh | inbox.sh | model.sh | tools.sh | tee -a "$session" | show.sh
 ```
 
 Everything that happens is a session event: what you type, what the model
@@ -65,10 +65,21 @@ up, one idea per chapter. It needs bash, `jq`, and `curl` for a real model.
 ## Try it
 
 Needs bash 4.4 or later (macOS: `brew install bash`), `jq` and `curl`.
+Installing is a clone and a symlink. The scripts stay together in the clone,
+and only `badbot` goes on your PATH (here `~/.local/bin`; any directory on
+your PATH will do):
+
+```bash
+git clone https://github.com/wrongbad/badbot.git ~/badbot
+ln -s ~/badbot/badbot/badbot.sh ~/.local/bin/badbot
+```
+
+`git pull` in the clone updates it; `rm ~/.local/bin/badbot` uninstalls it.
+Then:
 
 ```bash
 export OPENAI_API_KEY=sk-... BADBOT_MODEL=gpt-5   # or OPENAI_MODEL
-./badbot/badbot.sh [session]
+badbot [session]
 ```
 
 Type, and it answers. Type again while it works, and it reads you at its next
@@ -227,13 +238,13 @@ Here is the whole kernel, as the last line of [`badbot.sh`](badbot/badbot.sh)
 runs it, less its paths and flags:
 
 ```bash
-input.sh | inbox.sh | model.sh | tools.sh | tee -a "$session" | jq -f show.jq
+input.sh | inbox.sh | model.sh | tools.sh | tee -a "$session" | show.sh
 ```
 
 Every event goes through the inbox, then the model, then the tools, and ends
-in chapter 0's `tee`: in the session file, and on your screen, through `jq`
-and [`badbot/show.jq`](badbot/show.jq), which turn the events into what a person
-reads. Each actor is a filter that passes every event on, unchanged, and reacts
+in chapter 0's `tee`: in the session file, and on your screen, through
+[`show.sh`](badbot/show.sh), which runs `jq` with [`show.jq`](badbot/show.jq) to
+turn the events into what a person reads. Each actor is a filter that passes every event on, unchanged, and reacts
 to the ones it cares about.
 
 A pipeline only flows one way, though, and actors need to speak: the model's
@@ -498,17 +509,25 @@ a provider that finished just before it was stopped, gets its `cancel` as it
 arrives. **One actor decides; the others hear decisions in order.**
 
 Killing a call has to kill everything it started, so the tools kill it as a
-tree. They list it first, children before parents, then send the whole list
-`SIGTERM`, and two seconds later `SIGKILL`: whatever was in it, deaf to
-`SIGTERM` or orphaned since, goes.
+tree, with `killtree` from `lib.sh`. It lists the tree first, parents before
+children, then sends the whole list `SIGTERM`, and two seconds later
+`SIGKILL`: whatever was in it, deaf to `SIGTERM` or orphaned since, goes.
 
 ```bash
-tree() {
-    local child
-    for child in $(pgrep -P "$1"); do tree "$child"; done
-    echo "$1"
+killtree() {
+    local pids=("$@") i
+    kill -0 "$@" || return
+    for ((i = 0; i < ${#pids[@]}; i++)); do pids+=($(pgrep -P "${pids[i]}")); done
+    kill -TERM "${pids[@]}" 2>/dev/null
+    { sleep 2; kill -KILL "${pids[@]}"; } >/dev/null 2>&1 &
 }
+export -f killtree
 ```
+
+`export -f` puts the function in the environment, so every call's `bash`
+has it too, and the model can stop a job itself, a sub-agent included: a
+`kill` of one pid would stop only that process, and leave a pipeline's others,
+or a sub-agent's actors, running.
 
 The call's `.killed` file closes a race: a `cancel` that arrives before the
 call has started leaves the file, the call sees it, and kills itself.
@@ -543,11 +562,11 @@ message, as every model API requires; a job's answer is a note:
 
 ```bash
 [[ ${results[$id]-} ]] || results[$id]=$(jq -nc … '{type:"tool_result", tool_use_id:$id,
-    content:[{type:"text", text:"[a job now: its result comes later, in a message of its own. Its output: \($out)]"}]}')
+    content:[{type:"text", text:"[a job now: its result comes later, in a message of its own. Its output: \($c).out. To stop it: killtree $(<\($c).pid)]"}]}')
 ```
 
-So the model goes on at once, knowing the call runs and where its output is
-(`<session>.d/calls/<id>.out`).
+So the model goes on at once, knowing the call runs, where its output is
+(`<session>.d/calls/<id>.out`), and how to stop it.
 
 When the job ends, its worker says `block`, the same event as any call. The
 inbox sees that the call is no longer pending but a job. Its call has been
@@ -562,6 +581,14 @@ elif [[ ${jobs[$id]-} ]]; then # its call was answered: its result is news, and 
 message, not a silence. And the kernel does not exit while a job runs: `echo
 "start the server and run the e2e tests" | ./badbot/badbot.sh` waits for the tests.
 
+A sub-agent is the same: `echo "its task" | badbot.sh`, as a job. It needs
+nothing new, only the tools a job already has: its output file to `tail`,
+its session to read, `killtree` to stop it, and badbot's own resume to
+continue it, or to steer it once it is stopped. How to use them is a skill,
+[`badbot/skills/subagent/SKILL.md`](badbot/skills/subagent/SKILL.md): a file
+the system prompt lists, by name and description, for the model to read when
+it needs it. Each directory in `badbot/skills/` with a `SKILL.md` is one.
+
 ### 9. Ending
 
 Shutdown is an event too. When stdin ends, `input` says `eof`. The inbox, each
@@ -574,7 +601,7 @@ like the last event did, and when it reaches `tee`, the kernel is done.
 ### 10. What bash costs
 
 It runs: about 300 lines of code in the kernel and its actors (the providers
-and the system prompt aside), 7 of them in `badbot.sh` itself. It is
+and the system prompt aside), 5 of them in `badbot.sh` itself. It is
 built to be read, not to be fast, and where it is weaker, plainly:
 
 - **Every event goes through every actor**, read a byte at a time: bash `read`

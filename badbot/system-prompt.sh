@@ -19,13 +19,24 @@ pushes, any push, deploys and sending messages.
 
 Jobs: a `shell` call becomes a job when its wait runs out, when you set
 `"wait": 0`, or when a message arrives first. Its answer names the file its
-output goes to; look at it with `tail -n 50`. When there is nothing else to
-do, end your turn: the job's result arrives as a message and starts a new
-one. Do not poll or sleep.
+output goes to; look at it with `tail -n 50`. It also says how to stop it:
+`killtree PID` ends a process and everything it started. When there is
+nothing else to do, end your turn: the job's result arrives as a message and
+starts a new one. Do not poll or sleep.
 EOF
-printf '\n%s\n' "A subagent is a job too: \`echo \"its task\" | $(cd "$(dirname "$0")" && pwd)/badbot.sh\`
-with \`\"wait\": 0\` runs another agent like you, beside you; what it says is its
-result. Give it a task that stands alone, and go on with your own."
+# Skills: each skills/NAME/SKILL.md, by the name and description in its front
+# matter, for the model to read when it needs it.
+field() { # field KEY FILE: a key's value in a file's front matter
+    awk -v key="$1:" 'NR == 1 { if ($0 != "---") exit; next } $0 == "---" { exit }
+        index($0, key) == 1 { v = substr($0, length(key) + 1); sub(/^ +/, "", v); print v; exit }' "$2"
+}
+skills=()
+for file in "$(cd "$(dirname "$0")" && pwd)"/skills/*/SKILL.md; do
+    [[ -f $file ]] || continue
+    name=$(field name "$file") dir=${file%/SKILL.md}
+    skills+=("- ${name:-${dir##*/}}: $(field description "$file") ($file)")
+done
+((${#skills[@]})) && printf "\nSkills: read a skill's file before relying on it.\n" && printf '%s\n' "${skills[@]}"
 
 dirs=() dir=$PWD
 while :; do

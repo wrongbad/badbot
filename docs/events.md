@@ -12,7 +12,7 @@ everyone.
 
 | Event | Put by | Fields | Effect |
 |---|---|---|---|
-| `hello` | `input`, first | `session`, `provider`, `model` | shown: the session's path, to resume it |
+| `hello` | `input`, first | `session`, `provider`, `model`, `typing` (stdin is a terminal: a person types, and gets a prompt) | shown: the session's path, to resume it |
 | `send` | `input` (a typed line), or a command | `content`: a string, or content blocks (objects with a `type`); `when`: `turn` (default) or `now` | queued in the inbox; with no content, an `error` instead |
 | `abort` | a command | `jobs`: `true` also kills jobs, whose results are then dropped | the inbox ends the run: provider stopped (`preempt`), calls killed (`cancel`), what was sent and is still queued handed back |
 | `eof` | `input`, at the end of stdin | | the kernel exits once nothing is left |
@@ -49,7 +49,7 @@ everyone.
 |---|---|---|
 | `tool_start` | `call`, `name`, `input` | for each `tool_use` of an assistant message |
 | `job` | `call` | the call still runs when its `wait` runs out |
-| `block` | `call`; `block`: its `tool_result`, text `[exit N]`, `[killed]` (stopped by the kernel) or `[not run]` (no such tool, or no command), then the output (100 000 bytes at most), plus `name`, `status`, `ran` | the call ended |
+| `block` | `call`; `block`: its `tool_result`, text `[exit N]`, `[killed]` (stopped by the kernel) or `[not run]` (no such tool, or no command), then the output; or, for output over 100 000 bytes, only its size, its line count and the file it is in (output that is not text: its size and file), plus `name`, `status`, `ran`; and when the output is too long, `preview`: `lines`, and the `head` and `tail` lines (5 each) for the screen, which the model does not get. A command that succeeds and prints a PNG, JPEG, GIF or WebP image (3 MB at most) gets an `image` block after the text, its header `[exit 0; image/png, N bytes]` | the call ended |
 
 ## Files
 

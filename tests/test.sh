@@ -138,7 +138,7 @@ call() { printf '!@shell %s' "$(jq -nc "$@")"; }
 
 # ---------------------------------------------------------------- tests
 TESTS_ALL=(chat tools status job barge abort abort_tree abort_jobs bad_send resume
-    sigint sighup sigterm big actors nobus ids subagent
+    sigint sighup sigterm big media actors nobus ids subagent killtree skills
     openai_text openai_tools openai_noindex openai_stopcalls openai_401 openai_strerror
     openai_nospace openai_crlf openai_sigterm openai_request openai_kernel)
 
@@ -363,6 +363,39 @@ t_big() {
     jq -e '.messages | length == 3' s.d/request.json >/dev/null || fail "request.json is not valid, or not 3 messages"
 }
 
+PNG=iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg== # 1x1, 70 bytes
+t_media() { # an image becomes an image block; other bytes, and long lines, stay out of sight
+    { printf %s "$PNG" | base64 -d && head -c 3000000 /dev/zero; } >big.png # an image, past the limit
+    printf %s "$PNG" | base64 -d >dot.png && head -c 5000 /dev/urandom >noise && printf 'a\0b' >nul || fail "fixtures"
+    kernel s
+    type_ "!cat dot.png; cat dot.png && false; cat noise; cat nul; head -c 120000 /dev/zero | tr '\\0' y; seq 15; seq 30000; cat big.png"
+    wait_for s '.type == "run_end"'
+    finish
+    valid s
+    local results='of("message") | map(select(.source == "results"))[0].message.content | map(.content)' # in call order
+    check s "$results"' | .[0] == [{type:"text", text:"[exit 0; image/png, 70 bytes]"},
+        {type:"image", source:{type:"base64", media_type:"image/png", data:"'"$PNG"'"}}]' "no image block: $(get s "$results | .[0] | tojson")"
+    check s "$results"' | map(text) | (.[1] | test("^\\[exit 1; 70 bytes of image/png not shown: the command failed, so its messages may be in it; all of it in .*\\]$"))
+        and (.[2] | test("^\\[exit 0; 5000 bytes of binary output not shown, all of it in .*\\]$"))
+        and (.[3] | test("^\\[exit 0; 3 bytes of binary output not shown"))
+        and (.[4] | test("^\\[exit 0; 120000 bytes, 1 lines: more than 100000 bytes, so not shown. All of it is in .*/calls/.*\\.out: read parts of it with head, tail, sed -n, grep or awk\\]$"))
+        and .[5] == "[exit 0]\n" + ([range(1; 16) | tostring + "\n"] | join(""))
+        and (.[6] | startswith("[exit 0; 168894 bytes, 30000 lines: more than 100000 bytes, so not shown."))
+        and (.[7] | test("^\\[exit 0; 3000070 bytes of image/png not shown: images over 3000000 bytes are not sent, so make it smaller \\(sips -Z 1568, magick -resize 1568x1568\\); all of it in .*\\]$"))' \
+        "a failed image, binary or long output is not as it should be: $(get s "$results | map(text[:80]) | tojson")"
+    grep -qx 'output \[image/png, 70 bytes\]' s.stdout || fail "the image is not shown as [image/png, 70 bytes]"
+    grep -q '^output y\{200\} …$' s.stdout || fail "the long line is not cut at 200 characters"
+    grep -q '^       … y\{200\}$' s.stdout || fail "the long line's end is not shown"
+    grep -q '^       \[120000 bytes, 1 lines: more than 100000 bytes, so not shown' s.stdout || fail "the header is not shown"
+    grep -qx '       … 5 more lines' s.stdout || fail "seq 15 is not cut to its first and last 5 lines"
+    grep -A6 -x '       … 29990 more lines' s.stdout | sed -n 2,7p | tr '\n' ' ' | grep -q '^ *29996 *29997 *29998 *29999 *30000 *\[168894 bytes' ||
+        fail "seq 30000 is not its first and last 5 lines, then its header"
+    check s 'of("block") | map(select(.preview)) | length == 2 and all(.[]; .block.content | length == 1)' \
+        "the long outputs have no preview, or the model gets more than their header"
+    [[ $(get s "$results | .[6] | text | capture(\"in (?<f>[^:]*):\").f" | xargs wc -c) == *168894* ]] || fail "the file does not hold all of seq 30000"
+    (($(wc -c <s.stdout) < 4000)) || fail "the screen got $(wc -c <s.stdout) bytes"
+}
+
 t_actors() {
     local out
     out=$(echo hi | "$BADBOT/input.sh")
@@ -440,6 +473,38 @@ t_subagent() {
         "the subagent's answer is not the job's result"
 }
 
+t_killtree() { # the job's note says how to stop it, and that stops all of it: a subagent, its actors, its call
+    kernel s
+    local q sub inner stop
+    printf -v q %q "$BADBOT/badbot.sh"
+    printf -v sub %q "$T/sub"
+    printf -v inner %q "$(call --arg p "$T/pids" '{command:"sleep 37 & echo $! >>\($p | @sh); wait"}')" # one call: ! splits on ;
+    type_ "$(call --arg c "echo $inner | BADBOT_PROVIDER=echo $q $sub" '{command:$c, wait:0}')"
+    wait_for s '.type == "run_end"'
+    until_ 15 lines 1 pids || fail "the subagent's call did not start"
+    stop=$(get s '[of("message")[] | .message.content[]? | text | capture("To stop it: (?<k>.*)\\]$").k][0] // ""')
+    [[ $stop == killtree* ]] || fail "the job's note does not say how to stop it"
+    type_ "!$stop" # a call of its own: killtree is in every call's bash
+    wait_for s '.type == "message" and (.message.content | tostring | contains("[the job"))'
+    until_ 5 pids_gone pids || fail "the subagent's sleep still runs"
+    no_sub() { ! pgrep -f "$T/sub" >/dev/null; }
+    until_ 5 no_sub || fail "the subagent left running: $(pgrep -fl "$T/sub" | tr '\n' ';')"
+    finish
+}
+
+t_skills() { # the system prompt lists every skill, by name and description, with its file
+    "$BADBOT/system-prompt.sh" >prompt || fail "system-prompt.sh exited $?"
+    grep -qx "Skills: read a skill's file before relying on it." prompt || fail "no Skills: section"
+    local file n=0 name
+    for file in "$BADBOT"/skills/*/SKILL.md; do
+        name=$(sed -n 's/^name: *//p' "$file" | head -n 1)
+        grep -q "^- $name: .* ($file)\$" prompt || fail "no line for $name ($file)"
+        ((n++))
+    done
+    ((n > 0)) && grep -q '^- subagent: Sub-agents' prompt || fail "no subagent skill"
+    (($(grep -c '^- ' prompt) == n)) || fail "not one line per skill"
+}
+
 # openai.sh, alone, against the mock: REQ in, its events in out.jsonl.
 REQ='{"model":"test-model","session":"s","system":"be brief","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"tools":[],"params":{}}'
 openai() { # SCENARIO [REQUEST]
@@ -509,18 +574,24 @@ t_openai_request() {
     req=$(jq -c '.messages += [{role:"assistant", content:[{type:"text", text:"ok"},
             {type:"tool_use", id:"t1", name:"shell", input:{command:"ls"}}]},
         {role:"user", content:[{type:"tool_result", tool_use_id:"t1", content:[{type:"text", text:"[exit 0]\nfile"}]},
-            {type:"text", text:"thanks"}]}]' <<<"$REQ" | jq -c --slurpfile t "$BADBOT/tools.json" '.tools = ($t[0] | map(del(.program)))')
+            {type:"text", text:"thanks"}]},
+        {role:"assistant", content:[{type:"tool_use", id:"t2", name:"shell", input:{command:"cat dot.png"}}]},
+        {role:"user", content:[{type:"tool_result", tool_use_id:"t2", content:[{type:"text", text:"[exit 0; image/png, 70 bytes]"},
+            {type:"image", source:{type:"base64", media_type:"image/png", data:"AAAA"}}]}]}]' <<<"$REQ" | jq -c --slurpfile t "$BADBOT/tools.json" '.tools = ($t[0] | map(del(.program)))')
     openai request "$req" # the text stream, its request kept apart
     jq -e '.messages[1:] == [{role:"user", content:"hi"},
         {role:"assistant", content:"ok", tool_calls:[{id:"t1", type:"function", function:{name:"shell", arguments:"{\"command\":\"ls\"}"}}]},
-        {role:"tool", tool_call_id:"t1", content:"[exit 0]\nfile"}, {role:"user", content:"thanks"}]
+        {role:"tool", tool_call_id:"t1", content:"[exit 0]\nfile"}, {role:"user", content:"thanks"},
+        {role:"assistant", content:null, tool_calls:[{id:"t2", type:"function", function:{name:"shell", arguments:"{\"command\":\"cat dot.png\"}"}}]},
+        {role:"tool", tool_call_id:"t2", content:"[exit 0; image/png, 70 bytes]\n(its image is in the next user message)"},
+        {role:"user", content:[{type:"image_url", image_url:{url:"data:image/png;base64,AAAA"}}]}]
         and (.tools | length == 1 and .[0].type == "function" and .[0].function.name == "shell"
             and .[0].function.parameters.required == ["command"])' "$MOCK_DIR/request-request.json" >/dev/null ||
         fail "the request is not in Chat Completions' terms: $(cat "$MOCK_DIR/request-request.json")"
 }
 t_openai_kernel() {
     BADBOT_PROVIDER=openai BADBOT_MODEL=test-model OPENAI_API_KEY=sk-test \
-        OPENAI_BASE_URL=http://127.0.0.1:$MOCK_PORT/text kernel s
+        OPENAI_BASE_URL=http://127.0.0.1:$MOCK_PORT/kernel kernel s
     type_ hi
     wait_for s '.type == "run_end"'
     finish
