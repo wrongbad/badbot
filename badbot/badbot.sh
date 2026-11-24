@@ -12,12 +12,12 @@
 # Exits 1 if its last run ended in an error (the provider failed), so a parent
 # can tell a sub-agent that gave up from one that is done.
 # The environment says the rest:
-#   BADBOT_PROVIDER  NAME runs NAME.sh, here; openai if unset (echo: no key needed)
+#   BADBOT_PROVIDER  NAME runs providers/NAME.sh; openai if unset (echo: no key needed)
 #   BADBOT_MODEL     the model the provider asks for
 #   BADBOT_EFFORT    how hard the model thinks: low, medium, high…; the provider's default if unset
 # A session keeps what /provider, /model and /effort chose, over these.
 
-exec 3>&- 4>&-             # fds 3 and 4 are the kernel's; anyone else's go
+exec 3>&- 4>&-             # close inherited fds 3 and 4 to free them
 export BADBOT_SESSION=${1:-$(mktemp "${TMPDIR:-/tmp}/badbot-session-XXXXXX")}
 mkdir -p "$BADBOT_SESSION.d" && exec 3>"$BADBOT_SESSION.d/bus" # the bus: fd 3, empty, in every actor
 . "$(dirname "$(readlink -f "$0")")/lib.sh" # and with it, the bus's lock: fd 4 (-f: on PATH, $0 is a symlink)

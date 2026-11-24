@@ -5,7 +5,8 @@ scenario (OPENAI_BASE_URL=http://127.0.0.1:PORT/text, for example); a scenario
 starting a- is Anthropic's Messages API (ANTHROPIC_BASE_URL=…/a-text). The
 body of each request is saved to DIR/request-SCENARIO.json, its auth header to
 DIR/auth-SCENARIO, and for a- scenarios its anthropic-beta header to
-DIR/beta-SCENARIO and the number of requests so far to DIR/count-SCENARIO.
+DIR/beta-SCENARIO; for every scenario, the number of requests so far is in
+DIR/count-SCENARIO.
 """
 import json
 import os
@@ -48,6 +49,9 @@ STREAMS = {
     "text": TEXT,
     "kernel": TEXT,  # the same stream, for openai_kernel: its request is saved apart from openai_text's
     "nospace": TEXT,
+    # reasoning first, in two deltas: thinking is said once
+    "reasoning": [chunk({"role": "assistant", "content": "", "reasoning_content": "Hm"}),
+                  chunk({"reasoning_content": "m."})] + TEXT[1:],
     "crlf": TEXT,
     "tools": [
         chunk({"role": "assistant", "content": "Let me look."}),
@@ -134,8 +138,17 @@ class Handler(BaseHTTPRequestHandler):
             f.write(body)
         with open(os.path.join(DIR, "auth-%s" % scenario), "w") as f:
             f.write(self.headers.get("Authorization", "") or self.headers.get("x-api-key", ""))
+        counter = os.path.join(DIR, "count-%s" % scenario)
+        n = int(open(counter).read()) + 1 if os.path.exists(counter) else 1
+        with open(counter, "w") as f:
+            f.write(str(n))
         if scenario.startswith("a-"):
-            return self.anthropic(scenario)
+            return self.anthropic(scenario, n)
+        if scenario == "inflight" and n < 3:  # twice, then the stream: no status says try again, the message does
+            return self.plain(402, {"error": {"message": "This request would exceed your available credits given your "
+                                              "current in-flight requests. Retry after in-flight requests settle, or add credits."}})
+        if scenario.startswith("down"):  # always (down-sigterm: the same, counted apart)
+            return self.plain(503, {"error": {"message": "Service Unavailable", "type": "server_error"}})
         if scenario == "unauthorized":
             return self.plain(401, {"error": {"message": "Incorrect API key provided: sk-test",
                                               "type": "invalid_request_error", "code": "invalid_api_key"}})
@@ -154,6 +167,9 @@ class Handler(BaseHTTPRequestHandler):
                 time.sleep(20)
                 return
             self.wfile.write((": keep-alive" + nl + nl).encode())
+            if scenario == "overloaded" and n == 1:  # an error as the stream's first event, once
+                self.send(prefix, {"error": {"message": "Overloaded", "type": "server_error"}}, nl)
+                return
             for c in STREAMS.get(scenario, TEXT):
                 self.send(prefix, c, nl)
             self.wfile.write((prefix + "[DONE]" + nl + nl).encode())
@@ -169,13 +185,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.plain(401, {"error": {"message": "Incorrect API key provided: sk-test"}})
         self.plain(200, {"data": [{"id": "b"}, {"id": "a"}]})
 
-    def anthropic(self, scenario):
+    def anthropic(self, scenario, n):
         with open(os.path.join(DIR, "beta-%s" % scenario), "w") as f:
             f.write(self.headers.get("anthropic-beta", ""))
-        counter = os.path.join(DIR, "count-%s" % scenario)
-        n = int(open(counter).read()) + 1 if os.path.exists(counter) else 1
-        with open(counter, "w") as f:
-            f.write(str(n))
         if scenario == "a-unauthorized":
             return self.plain(401, {"type": "error", "error": {"type": "authentication_error",
                                                                "message": "invalid x-api-key"}})
@@ -194,6 +206,10 @@ class Handler(BaseHTTPRequestHandler):
                           block(1, type="tool_use", id="toolu_9", name="shell", input={})]:
                     self.sse(e)
                 time.sleep(20)
+                return
+            if scenario == "a-midoverloaded" and n == 1:  # overloaded after message_start, once
+                for e in [A_START, ev("ping"), ev("error", error={"type": "overloaded_error", "message": "Overloaded"})]:
+                    self.sse(e)
                 return
             for e in A_STREAMS.get(scenario, A_TEXT):
                 self.sse(e)

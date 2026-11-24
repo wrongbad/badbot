@@ -42,7 +42,7 @@ everyone.
 | Event | Fields | When |
 |---|---|---|
 | `turn_start` | `run`, `turn` | `continue` |
-| `text_delta`, and anything else a provider writes | as the provider writes them | streaming; for display |
+| `text_delta`, `thinking`, and anything else a provider writes | as the provider writes them | streaming; for display. `thinking`, with no fields: the model starts to think (what it thinks is not shown) |
 | `message` | `source: assistant`; `run`, `turn`, `message` | the provider's `result`; `tool_use` blocks kept only when `stop` is `tool_use`; none when it has no content |
 | `settings` | `provider`, `model`, `effort` | a `set` changed them: what the next turn asks for. Resuming, the last one is what the session starts with, over the environment. `tools` runs every call with them as `BADBOT_PROVIDER`, `BADBOT_MODEL` and `BADBOT_EFFORT`, so a sub-agent asks the same |
 | `options` | `key`, `provider`, `current`, `default`, `choices` | a `list`: the providers (the scripts whose second line says `# NAME: a provider`), or what the provider's `--list` printed |
@@ -66,11 +66,11 @@ everyone.
 | `S.d/request.json` | the last request sent to a provider |
 | `S.d/calls/ID.out` | a call's stdout and stderr, all of it (in ID, anything but letters, digits, `_` and `-` becomes `_`) |
 | `S.d/calls/ID.pid`, `.status`, `.killed`, `.job` | its process, how it ended, whether it was killed, and whether it went on as a job |
-| `S.d/claudecode/` | the `claudecode` provider's: `state.json` (what its `claude` holds), and a directory for the `claude` it keeps: its stdin (a fifo), stdout (`out`), stderr, pid, and the calls it waits on |
+| `S.d/claude/` | the `claude` provider's: `state.json` (what its `claude` holds), and a directory for the `claude` it keeps: its stdin (a fifo), stdout (`out`), stderr, pid, and the calls it waits on |
 
 ## Providers
 
-A provider is a program: `BADBOT_PROVIDER=NAME` runs `badbot/NAME.sh`
+A provider is a program: `BADBOT_PROVIDER=NAME` runs `badbot/providers/NAME.sh`
 once per turn. It reads one line on stdin, the request, which the model actor
 also keeps in `S.d/request.json`:
 
@@ -89,7 +89,7 @@ for a call that went on as a job, a note, and its result comes later as text;
 for one the session ended before, `[interrupted: …]`.
 
 It writes events on stdout, one per line: anything to show (`text_delta` with `text`,
-`error` with `where` and `message`, …), which goes onto the bus as it is, and
+`thinking` when the model starts to think, `error` with `where` and `message`, …), which goes onto the bus as it is, and
 last, the one that counts:
 
 | Field | |
@@ -112,11 +112,11 @@ A `set` of a choice other than a model must be one it lists, if it lists any.
 |---|---|---|---|
 | `openai` | the server's `GET /models`, sorted | `none` to `xhigh` | `reasoning_effort` |
 | `anthropic` | the API's `GET /v1/models` | `low` to `max` | `output_config.effort` (else `high`) |
-| `claudecode` | `fable`, `opus`, `sonnet`, `haiku` | `low` to `max` | `--effort` (else `params.effort`) |
+| `claude` | `fable`, `opus`, `sonnet`, `haiku` | `low` to `max` | `--effort` (else `params.effort`) |
 | `echo` | none | none | not used |
 
-A provider runs once per turn, but what it starts need not: `claudecode`
-keeps a `claude` process for the session in `S.d/claudecode`, and ends it when
+A provider runs once per turn, but what it starts need not: `claude`
+keeps a `claude` process for the session in `S.d/claude`, and ends it when
 the model actor, its parent, is gone. Each turn it checks that the request
 goes on from what that `claude` holds, and starts a new one, given the whole
 conversation, when it does not.
@@ -125,4 +125,4 @@ conversation, when it does not.
 |---|---|
 | `openai` | any: merged into the request body |
 | `anthropic` | any: merged into the request body over its defaults (`thinking`, `output_config`, `fallbacks`, `cache_control`, `max_tokens`); `null` leaves a field out |
-| `claudecode` | `effort` (`--effort`), `max_tokens` (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`) |
+| `claude` | `effort` (`--effort`), `max_tokens` (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`) |

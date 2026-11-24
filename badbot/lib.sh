@@ -5,7 +5,7 @@
 # which input.sh, at the head of the pipeline, follows, so every actor sees it
 # in its turn. Fd 4 is the bus's lock. In a kernel, both are inherited, and
 # the environment says the rest (BADBOT_SESSION set means: in a kernel):
-#   BADBOT_SESSION  the session file    BADBOT_PROVIDER  NAME: NAME.sh
+#   BADBOT_SESSION  the session file    BADBOT_PROVIDER  NAME: providers/NAME.sh
 #                                      BADBOT_MODEL     the model it asks for
 #                                      BADBOT_EFFORT    how hard it thinks
 # Run alone, an actor needs none of them: fd 3 is stdout, with a lock of its

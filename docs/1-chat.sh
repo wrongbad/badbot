@@ -5,7 +5,7 @@
 #   docs/1-chat.sh [session.jsonl]     BADBOT_PROVIDER, BADBOT_MODEL: as for badbot
 badbot=$(cd "$(dirname "$0")/../badbot" && pwd) # the providers
 session=${1:-session.jsonl}
-provider=$badbot/${BADBOT_PROVIDER:-openai}.sh
+provider=$badbot/providers/${BADBOT_PROVIDER:-openai}.sh
 
 while IFS= read -r text; do
     jq -nc --arg t "$text" '{type:"message", message:{role:"user", content:[{type:"text", text:$t}]}}' >>"$session"

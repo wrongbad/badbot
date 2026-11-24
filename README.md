@@ -89,7 +89,7 @@ BADBOT_PROVIDER=anthropic ANTHROPIC_API_KEY=sk-ant-... badbot
 ```
 
 ```bash
-BADBOT_PROVIDER=claudecode BADBOT_MODEL=opus badbot
+BADBOT_PROVIDER=claude BADBOT_MODEL=opus badbot
 ```
 
 Type, and it answers. Type again while it works, and it reads you at its next
@@ -102,9 +102,9 @@ and 0 otherwise.
 
 | Variable | Default | |
 |---|---|---|
-| `BADBOT_PROVIDER` | `openai` | [`openai`](badbot/openai.sh): any Chat Completions server, by `OPENAI_BASE_URL`; [`anthropic`](badbot/anthropic.sh): Anthropic's Messages API, by `ANTHROPIC_API_KEY` (and `ANTHROPIC_BASE_URL`); [`claudecode`](badbot/claudecode.sh): the `claude` CLI on your PATH, on your Claude subscription; [`echo`](badbot/echo.sh): a stand-in, no key needed, that echoes you, and asks for shell commands when a line starts with `!` |
-| `BADBOT_MODEL` | by provider | the model: for `openai`, `OPENAI_MODEL`; for `anthropic`, `ANTHROPIC_MODEL`, else `claude-opus-5-5`; for `claudecode`, an alias (`fable`, `opus`, `sonnet`, `haiku`) or an id, else Claude Code's default |
-| `BADBOT_EFFORT` | by provider | how hard the model thinks: for `anthropic` and `claudecode`, `low`, `medium`, `high`, `xhigh` or `max`; for `openai`, its `reasoning_effort` |
+| `BADBOT_PROVIDER` | `openai` | [`openai`](badbot/providers/openai.sh): any Chat Completions server, by `OPENAI_BASE_URL`; [`anthropic`](badbot/providers/anthropic.sh): Anthropic's Messages API, by `ANTHROPIC_API_KEY` (and `ANTHROPIC_BASE_URL`); [`claude`](badbot/providers/claude.sh): the `claude` CLI on your PATH, on your Claude subscription; [`echo`](badbot/providers/echo.sh): a stand-in, no key needed, that echoes you, and asks for shell commands when a line starts with `!` |
+| `BADBOT_MODEL` | by provider | the model: for `openai`, `OPENAI_MODEL`; for `anthropic`, `ANTHROPIC_MODEL`, else `claude-opus-5-5`; for `claude`, an alias (`fable`, `opus`, `sonnet`, `haiku`) or an id, else Claude Code's default |
+| `BADBOT_EFFORT` | by provider | how hard the model thinks: for `anthropic` and `claude`, `low`, `medium`, `high`, `xhigh` or `max`; for `openai`, its `reasoning_effort` |
 
 In a session, `/provider`, `/model` and `/effort` list the choices, and with
 a name, choose one (`default`: the provider's own). `/provider NAME MODEL`
@@ -126,7 +126,7 @@ it came, so `jq 'select(.type == "usage")' SESSION` shows all of it.
 
 `anthropic` asks for adaptive thinking, high effort, server-side fallbacks and
 prompt caching, and retries an overloaded or rate-limited API before any text
-comes. `claudecode` keeps one `claude -p` for the session, between turns, and
+comes. `claude` keeps one `claude -p` for the session, between turns, and
 gives it badbot's tools over MCP (the model sees `mcp__badbot__shell`); Claude
 Code's own tools, settings, CLAUDE.md and memory are off. Claude Code adds its
 own lines to the system prompt, and thinking arrives without its text.
@@ -150,7 +150,7 @@ from chapter 4 on, the program is [`badbot/badbot.sh`](badbot/badbot.sh) and the
 actors beside it, each short enough to read whole.
 
 The examples need no API key: they assume `export BADBOT_PROVIDER=echo`, which runs
-[`badbot/echo.sh`](badbot/echo.sh), a stand-in model that echoes you, and
+[`badbot/providers/echo.sh`](badbot/providers/echo.sh), a stand-in model that echoes you, and
 asks for shell commands when a line starts with `!`. Without it, the model is
 OpenAI's.
 
@@ -215,9 +215,9 @@ Three ideas live in these lines and never leave:
   `case $line in '{"type":"result"'*)` routes it without parsing. A `"` inside a JSON string is always escaped, so that prefix can
   only be structure.
 - **A provider is replaceable.** `BADBOT_PROVIDER=echo` runs the stand-in;
-  unset, it is [`badbot/openai.sh`](badbot/openai.sh), which talks to a real
-  model with `curl`; [`anthropic`](badbot/anthropic.sh) and
-  [`claudecode`](badbot/claudecode.sh) talk to Claude. Nothing in the loop
+  unset, it is [`badbot/providers/openai.sh`](badbot/providers/openai.sh), which talks to a real
+  model with `curl`; [`anthropic`](badbot/providers/anthropic.sh) and
+  [`claude`](badbot/providers/claude.sh) talk to Claude. Nothing in the loop
   knows which model it talks to.
 
 ### 2. Hands
@@ -653,7 +653,7 @@ built to be read, not to be fast, and where it is weaker, plainly:
   there is no way to write to a job's stdin. Edits are a command too,
   [`replace`](badbot/bin/replace), with the text in quoted heredocs, so that
   nothing in it needs escaping. A provider is started fresh each
-  turn, with the whole conversation (`claudecode` keeps its `claude` between
+  turn, with the whole conversation (`claude` keeps its `claude` between
   turns, so that Claude Code's prompt cache holds, and gives it only what is new).
 
 What it shows is the part that does not depend on the language: one stream,

@@ -22,9 +22,9 @@ last=$(grep '^{"type":"settings"' "$session" 2>/dev/null | tail -n 1)
     settings=$new
 provider=$(jq -r .provider <<<"$settings")
 
-# is_provider NAME: NAME.sh, here, says on its second line that it is one: "# NAME: a provider …".
+# is_provider NAME: providers/NAME.sh says on its second line that it is one: "# NAME: a provider …".
 is_provider() {
-    [[ $1 =~ ^[A-Za-z0-9_-]+$ && -x $here/$1.sh && $(sed -n 2p "$here/$1.sh") == "# $1: a provider"* ]]
+    [[ $1 =~ ^[A-Za-z0-9_-]+$ && -x $here/providers/$1.sh && $(sed -n 2p "$here/providers/$1.sh") == "# $1: a provider"* ]]
 }
 
 # set_ EVENT: the settings it names change, if they may. A new provider starts
@@ -47,7 +47,7 @@ set_() {
     for key in "${keys[@]}"; do
         value=$(jq -r --arg k "$key" '.[$k]' <<<"$new")
         [[ $value ]] || continue
-        choices=$(bare "$here/$p.sh" --list "$key" </dev/null 2>/dev/null | jq -c '.choices // []' 2>/dev/null)
+        choices=$(bare "$here/providers/$p.sh" --list "$key" </dev/null 2>/dev/null | jq -c '.choices // []' 2>/dev/null)
         jq -e --arg v "$value" 'length > 0 and (any(.[]; . == $v) | not)' <<<"${choices:-[]}" >/dev/null || continue
         put '{type:"error",where:"set",message:"\($p) has no \($k) \($v): \($c | join(", "))"}' \
             --arg p "$p" --arg k "$key" --arg v "$value" --argjson c "$choices"
@@ -58,7 +58,7 @@ set_() {
 }
 
 # Worker: list KEY: the choices for a setting, as options. The providers are
-# the scripts here that say they are one; the rest, the provider lists (it may
+# the scripts in providers/ that say they are one; the rest, the provider lists (it may
 # ask its server): NAME.sh --list KEY prints {"choices":[…],"default":"…"}.
 list() {
     local key=$1 out f n
@@ -68,10 +68,10 @@ list() {
         return
     fi
     if [[ $key == provider ]]; then
-        out=$(for f in "$here"/*.sh; do
+        out=$(for f in "$here"/providers/*.sh; do
             n=${f##*/} && n=${n%.sh} && is_provider "$n" && echo "$n"
         done | jq -Rnc '{choices:[inputs], default:"openai"}')
-    elif ! out=$(bare "$here/$provider.sh" --list "$key" </dev/null 2>&1) ||
+    elif ! out=$(bare "$here/providers/$provider.sh" --list "$key" </dev/null 2>&1) ||
         ! jq -e '(.choices | type) == "array"' <<<"$out" >/dev/null 2>&1; then
         put '{type:"error",where:"list",message:"\($p) cannot list \($k)\(if $o == "" then "" else ": " + $o end)"}' \
             --arg p "$provider" --arg k "$key" --arg o "$out"
@@ -99,11 +99,11 @@ answered='
         | .out + (if .open == [] then [] else [{role:"user", content:interrupted(.open)}] end);'
 
 start_turn() {
-    local from request=$session.d/request.json program=$here/$provider.sh
+    local from request=$session.d/request.json program=$here/providers/$provider.sh
     ((turn++))
     put '{type:"turn_start",run:$r,turn:$t}' --argjson r "$run" --argjson t "$turn"
     if [[ ! -x $program ]]; then
-        put '{type:"error",where:"provider",message:"no provider: badbot/\($p).sh"}' --arg p "$provider"
+        put '{type:"error",where:"provider",message:"no provider: badbot/providers/\($p).sh"}' --arg p "$provider"
         put '{type:"turn_end",run:$r,turn:$t,stop:"error"}' --argjson r "$run" --argjson t "$turn"
         return
     fi

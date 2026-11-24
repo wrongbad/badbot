@@ -1,10 +1,10 @@
-# anthropic.jq: the Anthropic Messages format, for anthropic.sh and claudecode.sh
-# (jq -L badbot 'include "anthropic"; …'). A request's messages in the API's
+# anthropic.jq: the Anthropic Messages format, for anthropic.sh and claude.sh
+# (jq -L badbot/providers 'include "anthropic"; …'). A request's messages in the API's
 # terms, and a reply read from the API's stream events.
 
 # The request's messages as the API takes them: a tool_result without the facts
 # badbot keeps beside it (name, status, ran), a tool_use's input always an
-# object, its name after $prefix (claudecode's MCP names), and no x- blocks or
+# object, its name after $prefix (claude's MCP names), and no x- blocks or
 # fields.
 def api_messages($prefix):
   def plain: with_entries(select(.key | startswith("x-") | not));
@@ -16,7 +16,8 @@ def api_messages($prefix):
       else plain end) end);
 
 # A reply, as its stream events come: start with fresh, then step each event.
-# .emit holds the events to show for the last one; .done says message_stop came.
+# .emit holds the events to show for the last one: text_delta, and thinking when
+# a thinking block starts (its text is not shown); .done says message_stop came.
 def fresh: {blocks: [], stop: null, usage: {}, done: false, error: null, emit: []};
 def step($e):
   def at: [.blocks[].i] | rindex($e.index);
@@ -28,6 +29,7 @@ def step($e):
       | if $b.type == "fallback" then .blocks |= map(if .start.type == "text" then . else .dropped = true end) else . end
       | .blocks += [{i: $e.index, start: $b, text: ($b.text // ""), thinking: ($b.thinking // ""),
                      signature: ($b.signature // ""), json: ""}]
+      | if $b.type == "thinking" or $b.type == "redacted_thinking" then .emit = [{type: "thinking"}] else . end
     elif $e.type == "content_block_delta" then
       at as $i | ($e.delta) as $d
       | if $i == null then .

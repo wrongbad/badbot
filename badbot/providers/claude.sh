@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# claudecode: a provider that asks Claude Code, through the claude CLI on PATH,
+# claude: a provider that asks Claude Code, through the claude CLI on PATH,
 # on the user's Claude subscription. It never touches Claude Code's credentials.
-#   BADBOT_PROVIDER=claudecode badbot/badbot.sh     BADBOT_MODEL: fable, opus, sonnet, haiku, or an id
+#   BADBOT_PROVIDER=claude badbot/badbot.sh     BADBOT_MODEL: fable, opus, sonnet, haiku, or an id
 # Without BADBOT_MODEL, claude picks. The request's effort (else params.effort)
 # is --effort, and params.max_tokens CLAUDE_CODE_MAX_OUTPUT_TOKENS.
-#   badbot/claudecode.sh --list model|effort     the choices: claude's aliases; its efforts
+#   badbot/providers/claude.sh --list model|effort     the choices: claude's aliases; its efforts
 #
 # One claude (claude -p, stream-json) per session, kept between turns: Claude
 # Code continues a conversation's prompt cache only from its own previous
@@ -19,7 +19,7 @@
 # When it calls, the turn ends with the calls (their prefix stripped), and
 # claude waits; the next turn's tool results answer them.
 #
-# Its files are in S.d/claudecode: state.json (what claude holds), and for each
+# Its files are in S.d/claude: state.json (what claude holds), and for each
 # claude a directory: its stdin (a fifo), stdout (out), stderr (err), pid, the
 # lines of out read so far (lines), and the calls it asked for that wait for
 # their results (held). claude ends with the kernel: a watcher checks once a
@@ -42,14 +42,14 @@ trap 'stopped=1; [[ $tail_pid ]] && kill "$tail_pid" 2>/dev/null' TERM
 IFS= read -r request
 
 fail() { # MESSAGE: says it, and the result of a failed turn
-    jq -nc --arg m "claudecode: $1" '{type:"error", where:"provider", message:$m},
+    jq -nc --arg m "claude: $1" '{type:"error", where:"provider", message:$m},
         {type:"result", stop:"error", message:{role:"assistant", content:[]}}'
     exit 0
 }
 command -v claude >/dev/null || fail "claude is not on PATH"
 session=$(jq -r '.session // empty' <<<"$request" 2>/dev/null) || fail "the request is not JSON"
 [[ $session ]] || fail "the request names no session"
-D=$session.d/claudecode
+D=$session.d/claude
 mkdir -p "$D" || fail "cannot make $D"
 req=$D/request.json
 printf '%s\n' "$request" >"$req"

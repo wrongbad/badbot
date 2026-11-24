@@ -4,9 +4,12 @@
 #   BADBOT_PROVIDER=openai BADBOT_MODEL=gpt-5 badbot/badbot.sh     needs OPENAI_API_KEY for api.openai.com
 # The model is BADBOT_MODEL, else OPENAI_MODEL; the request's effort is its
 # reasoning_effort.
-#   badbot/openai.sh --list model|effort     the choices: the server's models; the efforts
+#   badbot/providers/openai.sh --list model|effort     the choices: the server's models; the efforts
+# A failed connection, a 429, a 5xx, an overloaded server or an error about
+# in-flight requests is tried again, before the stream says anything (post.sh).
 # On SIGTERM it stops the request and gives back what it has said so far.
 set -u
+here=$(cd "$(dirname "$0")" && pwd)
 base=${OPENAI_BASE_URL:-https://api.openai.com/v1}
 
 if [[ ${1-} == --list ]]; then # {"choices":[…],"default":"…"}, or why not on stderr
@@ -23,8 +26,8 @@ if [[ ${1-} == --list ]]; then # {"choices":[…],"default":"…"}, or why not o
     exit
 fi
 
-stopped= curl=
-trap 'stopped=1; [[ $curl ]] && kill "$curl" 2>/dev/null' TERM
+stopped= child=
+trap 'stopped=1; [[ $child ]] && kill "$child" 2>/dev/null' TERM
 IFS= read -r request
 
 fail() { # MESSAGE: says it, and the result of a failed turn
@@ -63,11 +66,13 @@ body=$(jq -c --arg fallback "${OPENAI_MODEL-}" '
     + .params' <<<"$request" 2>&1) || fail "${body#jq: error (at *): }"
 [[ $stopped ]] && { jq -nc '{type:"result", stop:"aborted", message:{role:"assistant", content:[]}}'; exit 0; }
 
-# The stream, as it comes: a text_delta for each piece of text; at its end, the
-# result. The key and the body go to curl by file descriptor, not argument.
-exec {sse}< <(exec curl -sSN "$base/chat/completions" -H 'Content-Type: application/json' \
-    -H @<(printf 'Authorization: Bearer %s\n' "${OPENAI_API_KEY-}") --data-binary @<(printf '%s' "$body") 2>&1)
-curl=$!
+# The stream, as it comes: thinking when reasoning starts (a delta's
+# reasoning_content or reasoning), a text_delta for each piece of text; at its end, the
+# result. post.sh sends it; the key and the body go to it on stdin, not as arguments.
+exec {sse}< <(exec "$here/post.sh" "$base/chat/completions" 2>&1 \
+    < <(printf '%s\n' 'Content-Type: application/json' "Authorization: Bearer ${OPENAI_API_KEY-}" '' "$body"))
+child=$!
+[[ $stopped ]] && kill "$child" 2>/dev/null # SIGTERM came before there was a child to stop
 result=
 while IFS= read -r line; do
     case $line in
@@ -77,7 +82,7 @@ while IFS= read -r line; do
 done < <(jq -nRc --unbuffered <&"$sse" '
     def stop: {stop:"end_turn", tool_calls:"tool_use", function_call:"tool_use",
                length:"max_tokens", content_filter:"refusal"}[.] // .;
-    foreach ((inputs | rtrimstr("\r")), null) as $l ({text:"", calls:[], stop:null, usage:null, err:""};
+    foreach ((inputs | rtrimstr("\r")), null) as $l ({text:"", calls:[], stop:null, usage:null, err:"", thinking:false};
         .emit = []
         | if $l == null then
             ([.calls[] | select(. != null)] | length > 0) as $calls # some servers say "stop" with calls
@@ -96,7 +101,9 @@ done < <(jq -nRc --unbuffered <&"$sse" '
               else
                 ($c.choices[0]? // {}) as $ch
                 | ($ch.delta.content // "") as $t
-                | if $t != "" then .text += $t | .emit += [{type:"text_delta", text:$t}] else . end
+                | if ($ch.delta.reasoning_content // $ch.delta.reasoning // "") != "" and (.thinking | not)
+                  then .thinking = true | .emit += [{type:"thinking"}] else . end
+                | if $t != "" then .text += $t | .thinking = false | .emit += [{type:"text_delta", text:$t}] else . end
                 | reduce ($ch.delta.tool_calls // [])[] as $tc (.; # by index; without one, by id, or the last
                     ($tc.index // (if $tc.id then [.calls[] | .id?] | index($tc.id) // length else null end)
                         // ([(.calls | length) - 1, 0] | max)) as $i
@@ -106,6 +113,8 @@ done < <(jq -nRc --unbuffered <&"$sse" '
                 | if $ch.finish_reason then .stop = ($ch.finish_reason | stop) else . end
                 | if $c.usage then .usage = $c.usage else . end
               end
+          elif $l | startswith("x-status: ") then # from post.sh: an error with no body says it
+            if .err == "" and ($l[10:] | tonumber? // 0) >= 400 then .err = "HTTP \($l[10:])" else . end
           elif $l == "" or ($l | test("^(:|data:|event:|id:|retry:)")) then .
           else .err += $l + "\n" end; # not the stream: an error body, or curl
         .emit[])')

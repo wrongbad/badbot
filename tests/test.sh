@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/test.sh: badbot's tests, all at once, in parallel. No network, no key:
 # the echo provider; for openai.sh and anthropic.sh a mock server (tests/mock.py),
-# and for claudecode.sh a stand-in claude (tests/bin/claude), both python3.
+# and for claude.sh a stand-in claude (tests/bin/claude), both python3.
 #   tests/test.sh [-v] [-l] [NAME...]
 #     NAME   run only these tests (NAME, or NAME_*: "openai" runs every openai_ test)
 #     -v     verbose (or TEST_VERBOSE=1): on failure, show the test's log and
@@ -142,10 +142,11 @@ call() { printf '!@shell %s' "$(jq -nc "$@")"; }
 TESTS_ALL=(chat tools status job barge abort abort_tree abort_jobs bad_send resume
     sigint sighup sigterm big media actors nobus ids subagent killtree skills settings settings_env usage replace killtree_sh exit_error terminal
     openai_text openai_tools openai_noindex openai_stopcalls openai_401 openai_strerror
-    openai_nospace openai_crlf openai_sigterm openai_request openai_kernel openai_list
-    anthropic_text anthropic_tools anthropic_401 anthropic_retry anthropic_midstream
+    openai_nospace openai_reasoning openai_crlf openai_sigterm openai_request openai_kernel openai_list
+    openai_inflight openai_overloaded openai_down openai_sigterm_retry
+    anthropic_text anthropic_tools anthropic_401 anthropic_retry anthropic_midstream anthropic_midoverloaded
     anthropic_sigterm anthropic_request anthropic_kernel anthropic_list
-    claudecode_turns claudecode_steer claudecode_restart claudecode_sigterm claudecode_noclaude claudecode_kernel claudecode_effort)
+    claude_turns claude_steer claude_restart claude_sigterm claude_noclaude claude_kernel claude_effort)
 
 t_chat() {
     kernel s
@@ -323,16 +324,16 @@ t_settings() { # /provider, /model, /effort: listed, checked, set, asked for, an
     wait_for s '.type == "run_end"'
     jq -e '.model == "x" and .effort == "high"' s.d/request.json >/dev/null ||
         fail "the request does not ask for model x, effort high: $(jq -c '{model, effort}' s.d/request.json)"
-    type_ '/provider claudecode' '/effort extreme' '/provider echo x' '/effort high' '/provider nope' '/model a b' '/Users/k is a path'
+    type_ '/provider claude' '/effort extreme' '/provider echo x' '/effort high' '/provider nope' '/model a b' '/Users/k is a path'
     wait_for s '.type == "run_end" and .run == 2'
     finish
     valid s
     check s 'of("options")[0] | .current == "echo" and .default == "openai"
-        and (.choices | index("anthropic") and index("claudecode") and index("echo") and index("openai") and (index("model") | not))' \
+        and (.choices | index("anthropic") and index("claude") and index("echo") and index("openai") and (index("model") | not))' \
         "the providers are not listed: $(get s 'of("options")[0] | tojson')"
     check s 'of("settings") | map([.provider, .model, .effort]) == [["echo", "x", ""], ["echo", "x", "high"],
-        ["claudecode", "", ""], ["echo", "x", ""], ["echo", "x", "high"]]' "not the settings: $(get s 'of("settings") | tojson')"
-    check s 'of("error") | map(.message) | sort == (["claudecode has no effort extreme: low, medium, high, xhigh, max",
+        ["claude", "", ""], ["echo", "x", ""], ["echo", "x", "high"]]' "not the settings: $(get s 'of("settings") | tojson')"
+    check s 'of("error") | map(.message) | sort == (["claude has no effort extreme: low, medium, high, xhigh, max",
         "no provider nope: /provider lists them", "/model: too many words"] | sort)' "not the errors: $(get s 'of("error") | tojson')"
     check s 'of("send")[-1].content == "/Users/k is a path"' "a path was not sent"
     BADBOT_MODEL=y BADBOT_EFFORT=low kernel s # resumed: the session's settings, over the environment's
@@ -640,7 +641,7 @@ t_skills() { # the system prompt lists every skill, by name and description, wit
 REQ='{"model":"test-model","session":"s","system":"be brief","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"tools":[],"params":{}}'
 openai() { # SCENARIO [REQUEST]
     printf '%s\n' "${2:-$REQ}" | OPENAI_BASE_URL=http://127.0.0.1:$MOCK_PORT/$1 OPENAI_API_KEY=sk-test \
-        "$BADBOT/openai.sh" >out.jsonl 2>err || fail "openai.sh exited $?"
+        "$BADBOT/providers/openai.sh" >out.jsonl 2>err || fail "openai.sh exited $?"
     valid out.jsonl
     check out.jsonl '(of("result") | length) == 1 and $e[-1].type == "result"' "the last event is not its one result"
 }
@@ -657,6 +658,12 @@ t_openai_text() {
     [[ $(<"$MOCK_DIR/auth-text") == "Bearer sk-test" ]] || fail "no Authorization: Bearer sk-test"
 }
 t_openai_nospace() { openai nospace; text_ok; }
+t_openai_reasoning() {
+    openai reasoning
+    text_ok
+    check out.jsonl '[$e[].type | select(. == "thinking" or . == "text_delta")] == ["thinking", "text_delta", "text_delta"]' \
+        "not one thinking before the deltas"
+}
 t_openai_crlf() { openai crlf; text_ok; }
 t_openai_tools() {
     openai tools
@@ -676,8 +683,42 @@ t_openai_stopcalls() {
 }
 t_openai_401() {
     openai unauthorized
+    [[ $(<"$MOCK_DIR/count-unauthorized") == 1 ]] || fail "a 401 was tried again"
     check out.jsonl 'of("error") | length == 1 and (.[0].message | startswith("openai: Incorrect API key"))' "no error naming the 401: $(head -n1 out.jsonl)"
     check out.jsonl 'of("result")[0] | .stop == "error" and .message.content == []' "the result is not an error"
+}
+t_openai_inflight() { # an error about in-flight requests, twice: tried again, though a 402
+    openai inflight
+    [[ $(<"$MOCK_DIR/count-inflight") == 3 ]] || fail "not 3 requests: $(<"$MOCK_DIR/count-inflight")"
+    check out.jsonl 'of("error") == []' "an error after all: $(head -n1 out.jsonl)"
+    text_ok
+}
+t_openai_overloaded() { # an error as the stream's first event: tried again
+    openai overloaded
+    [[ $(<"$MOCK_DIR/count-overloaded") == 2 ]] || fail "not 2 requests: $(<"$MOCK_DIR/count-overloaded")"
+    check out.jsonl 'of("error") == []' "an error after all: $(head -n1 out.jsonl)"
+    text_ok
+}
+t_openai_down() { # a 503 every time: 5 tries, then its error
+    openai down
+    [[ $(<"$MOCK_DIR/count-down") == 5 ]] || fail "not 5 requests: $(<"$MOCK_DIR/count-down")"
+    check out.jsonl 'of("error") | length == 1 and .[0].message == "openai: Service Unavailable"' "not the 503's error: $(head -n1 out.jsonl)"
+    check out.jsonl 'of("result")[0].stop == "error"' "the result is not an error"
+}
+t_openai_sigterm_retry() { # SIGTERM between tries: aborted at once, and nothing left
+    set -m
+    OPENAI_BASE_URL=http://127.0.0.1:$MOCK_PORT/down-sigterm OPENAI_API_KEY=sk-test \
+        "$BADBOT/providers/openai.sh" <<<"$REQ" >out.jsonl 2>err &
+    local pid=$!
+    set +m
+    echo "$pid" >>pgids
+    until_ 5 test -s "$MOCK_DIR/count-down-sigterm" || fail "no request"
+    kill -TERM "$pid"
+    until_ 1 gone "$pid" || fail "openai.sh still runs 1s after SIGTERM"
+    valid out.jsonl
+    check out.jsonl '$e[-1] | .type == "result" and .stop == "aborted"' "not aborted: $(tail -n1 out.jsonl)"
+    check out.jsonl 'of("error") == []' "an error: $(head -n1 out.jsonl)"
+    until_ 3 empty "$pid" || fail "still running: $(procs "$pid")"
 }
 t_openai_strerror() {
     openai strerror
@@ -688,7 +729,7 @@ deltas() { [[ $(count out.jsonl '.type == "text_delta"') == "$1" ]]; }
 t_openai_sigterm() {
     set -m # its own group: openai.sh, curl, jq
     OPENAI_BASE_URL=http://127.0.0.1:$MOCK_PORT/slow OPENAI_API_KEY=sk-test \
-        "$BADBOT/openai.sh" <<<"$REQ" >out.jsonl 2>err &
+        "$BADBOT/providers/openai.sh" <<<"$REQ" >out.jsonl 2>err &
     local pid=$!
     set +m
     echo "$pid" >>pgids
@@ -722,13 +763,13 @@ t_openai_request() {
 }
 t_openai_list() { # its models, sorted; its efforts; the effort asked for is reasoning_effort
     OPENAI_BASE_URL=http://127.0.0.1:$MOCK_PORT/list OPENAI_API_KEY=sk-test OPENAI_MODEL=a \
-        "$BADBOT/openai.sh" --list model >out.json 2>err || fail "--list model exited $?: $(<err)"
+        "$BADBOT/providers/openai.sh" --list model >out.json 2>err || fail "--list model exited $?: $(<err)"
     jq -e '. == {choices:["a", "b"], default:"a"}' out.json >/dev/null || fail "not the models: $(<out.json)"
     [[ $(<"$MOCK_DIR/get-list") == $'/list/models\nBearer sk-test' ]] || fail "not asked with the key: $(<"$MOCK_DIR/get-list")"
-    ! OPENAI_BASE_URL=http://127.0.0.1:$MOCK_PORT/unauthorized "$BADBOT/openai.sh" --list model >out.json 2>err ||
+    ! OPENAI_BASE_URL=http://127.0.0.1:$MOCK_PORT/unauthorized "$BADBOT/providers/openai.sh" --list model >out.json 2>err ||
         fail "--list model succeeded, unauthorized"
     [[ $(<err) == "Incorrect API key provided: sk-test" ]] || fail "not the API's error: $(<err)"
-    "$BADBOT/openai.sh" --list effort | jq -e '.choices | index("low") and index("high")' >/dev/null || fail "no efforts"
+    "$BADBOT/providers/openai.sh" --list effort | jq -e '.choices | index("low") and index("high")' >/dev/null || fail "no efforts"
     openai effort "$(jq -c '.effort = "low"' <<<"$REQ")"
     jq -e '.reasoning_effort == "low"' "$MOCK_DIR/request-effort.json" >/dev/null ||
         fail "no reasoning_effort: $(cat "$MOCK_DIR/request-effort.json")"
@@ -747,13 +788,15 @@ t_openai_kernel() {
 # anthropic.sh, alone, against the mock: REQ in, its events in out.jsonl.
 anthropic() { # SCENARIO [REQUEST]
     printf '%s\n' "${2:-$REQ}" | ANTHROPIC_BASE_URL=http://127.0.0.1:$MOCK_PORT/$1 ANTHROPIC_API_KEY=sk-test \
-        "$BADBOT/anthropic.sh" >out.jsonl 2>err || fail "anthropic.sh exited $?"
+        "$BADBOT/providers/anthropic.sh" >out.jsonl 2>err || fail "anthropic.sh exited $?"
     valid out.jsonl
     check out.jsonl '(of("result") | length) == 1 and $e[-1].type == "result"' "the last event is not its one result"
 }
 t_anthropic_text() {
     anthropic a-text
     check out.jsonl '[of("text_delta")[].text] == ["Hel", "lo"]' "deltas are not Hel, lo"
+    check out.jsonl '[$e[].type | select(. == "thinking" or . == "text_delta")] == ["thinking", "text_delta", "text_delta"]' \
+        "no thinking before the deltas"
     check out.jsonl 'of("result")[0] | .stop == "end_turn" and .message == {role:"assistant", content:[
         {type:"thinking", thinking:"Hmm.", signature:"sig"}, {type:"text", text:"Hello"}]}
         and .usage == {input:6, output:2, cache_read:4, cache_write:0}' "not the result: $(tail -n1 out.jsonl)"
@@ -782,6 +825,11 @@ t_anthropic_retry() {
     [[ $(<"$MOCK_DIR/count-a-overloaded") == 3 ]] || fail "not 3 requests: $(<"$MOCK_DIR/count-a-overloaded")"
     check out.jsonl 'of("error") == [] and of("result")[0].stop == "end_turn"' "no answer after two 529s: $(tail -n1 out.jsonl)"
 }
+t_anthropic_midoverloaded() { # overloaded after message_start and a ping: they said nothing, so tried again
+    anthropic a-midoverloaded
+    [[ $(<"$MOCK_DIR/count-a-midoverloaded") == 2 ]] || fail "not 2 requests: $(<"$MOCK_DIR/count-a-midoverloaded")"
+    check out.jsonl 'of("error") == [] and of("result")[0].stop == "end_turn"' "no answer after the error: $(tail -n1 out.jsonl)"
+}
 t_anthropic_midstream() {
     anthropic a-midstream
     check out.jsonl 'of("error") | length == 1 and .[0].message == "anthropic: bad thing"' "no error from the stream: $(head -n1 out.jsonl)"
@@ -790,7 +838,7 @@ t_anthropic_midstream() {
 t_anthropic_sigterm() {
     set -m # its own group: anthropic.sh, curl, jq
     ANTHROPIC_BASE_URL=http://127.0.0.1:$MOCK_PORT/a-slow ANTHROPIC_API_KEY=sk-test \
-        "$BADBOT/anthropic.sh" <<<"$REQ" >out.jsonl 2>err &
+        "$BADBOT/providers/anthropic.sh" <<<"$REQ" >out.jsonl 2>err &
     local pid=$!
     set +m
     echo "$pid" >>pgids
@@ -822,10 +870,10 @@ t_anthropic_request() {
 }
 t_anthropic_list() { # its models, in the API's order; its efforts; the effort asked for is output_config's
     ANTHROPIC_BASE_URL=http://127.0.0.1:$MOCK_PORT/a-list ANTHROPIC_API_KEY=sk-test \
-        "$BADBOT/anthropic.sh" --list model >out.json 2>err || fail "--list model exited $?: $(<err)"
+        "$BADBOT/providers/anthropic.sh" --list model >out.json 2>err || fail "--list model exited $?: $(<err)"
     jq -e '. == {choices:["b", "a"], default:"claude-opus-5-5"}' out.json >/dev/null || fail "not the models: $(<out.json)"
     [[ $(<"$MOCK_DIR/get-a-list") == $'/a-list/v1/models?limit=1000\nsk-test' ]] || fail "not asked with the key: $(<"$MOCK_DIR/get-a-list")"
-    "$BADBOT/anthropic.sh" --list effort | jq -e '.default == "high" and (.choices | index("max"))' >/dev/null || fail "no efforts"
+    "$BADBOT/providers/anthropic.sh" --list effort | jq -e '.default == "high" and (.choices | index("max"))' >/dev/null || fail "no efforts"
     anthropic a-effort "$(jq -c '.effort = "max"' <<<"$REQ")"
     jq -e '.output_config == {effort:"max"}' "$MOCK_DIR/request-a-effort.json" >/dev/null ||
         fail "not effort max: $(jq -c .output_config "$MOCK_DIR/request-a-effort.json")"
@@ -841,7 +889,7 @@ t_anthropic_kernel() {
         | map(select(.type == "text")) | text) == "Hello"' "the anthropic kernel did not answer Hello"
 }
 
-# claudecode.sh, against tests/bin/claude: replies.json is what it says, in
+# claude.sh, against tests/bin/claude: replies.json is what it says, in
 # order; log.jsonl what it was started with and read. Stream events:
 A_START='{"type":"message_start","message":{"usage":{"input_tokens":5}}}'
 a_text() { # INDEX TEXT: a text block, whole
@@ -863,8 +911,8 @@ fake_claude() { # REPLY...: the replies, in order
     jq -sc . <<<"$(printf '%s\n' "$@")" >replies.json
 }
 CC_REQ=$(jq -c '.session = "SESSION" | .model = "opus"' <<<"$REQ")
-claudecode() { # REQUEST: one turn, its events in out.jsonl
-    printf '%s\n' "$1" | "$BADBOT/claudecode.sh" >out.jsonl 2>err || fail "claudecode.sh exited $?"
+claude_turn() { # REQUEST: one turn, its events in out.jsonl
+    printf '%s\n' "$1" | "$BADBOT/providers/claude.sh" >out.jsonl 2>err || fail "claude.sh exited $?"
     valid out.jsonl
     check out.jsonl '(of("result") | length) == 1 and $e[-1].type == "result"' "the last event is not its one result: $(cat out.jsonl)"
 }
@@ -872,11 +920,11 @@ then_() { # REQUEST MESSAGE...: REQUEST, with out.jsonl's reply and the messages
     jq -c --slurpfile o out.jsonl '.messages += [$o[-1].message] + $ARGS.positional' --jsonargs "${@:2}" <<<"$1"
 }
 starts() { count log.jsonl 'has("start")'; }
-t_claudecode_turns() {
+t_claude_turns() {
     fake_claude "$(reply_call toolu_1 '{"command":"ls"}')" "$(reply_text Done.)" "$(reply_text Again.)"
     local r1 r2 r3
     r1=$(jq -c --arg s "$T/s" --slurpfile t "$BADBOT/tools.json" '.session = $s | .tools = ($t[0] | map(del(.program)))' <<<"$CC_REQ")
-    claudecode "$r1"
+    claude_turn "$r1"
     check out.jsonl 'of("result")[0] | .stop == "tool_use" and .message.content == [{type:"tool_use", id:"toolu_1", name:"shell", input:{command:"ls"}}]' \
         "not the call, unprefixed: $(tail -n1 out.jsonl)"
     check log.jsonl '$e[0].start as $a | ($a | index("--model")) as $m | $a[$m + 1] == "opus"
@@ -886,26 +934,26 @@ t_claudecode_turns() {
         | length == 1 and .[0].name == "shell" and .[0].inputSchema.required == ["command"]' "tools/list did not list shell"
     r2=$(then_ "$r1" '{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":false,
         "content":[{"type":"text","text":"[exit 0]\nfile"}],"name":"shell","status":"exit 0","ran":0}]}')
-    claudecode "$r2"
+    claude_turn "$r2"
     check out.jsonl 'of("result")[0] | .stop == "end_turn" and .message.content == [{type:"text", text:"Done."}]' "not Done.: $(tail -n1 out.jsonl)"
     check log.jsonl '[$e[] | .mcp? // empty | select(.[0].method == "tools/call")] | length == 1
         and .[0][1].response.mcp_response.result == {isError:false, content:[{type:"text", text:"[exit 0]\nfile"}]}' \
         "the call was not answered with its result"
     r3=$(then_ "$r2" '{"role":"user","content":[{"type":"text","text":"again"}]}')
-    claudecode "$r3"
+    claude_turn "$r3"
     check out.jsonl 'of("result")[0].message.content == [{type:"text", text:"Again."}]' "not Again.: $(tail -n1 out.jsonl)"
     [[ $(starts) == 1 ]] || fail "claude started $(starts) times, not once"
     check log.jsonl '[$e[] | .in? // empty | select(.type == "user")] | map(.message.content[0].text) == ["hi", "again"]' \
         "claude was not given hi, then again"
 }
-t_claudecode_steer() { # steering beside call results: the same claude, told first, then the calls answered
+t_claude_steer() { # steering beside call results: the same claude, told first, then the calls answered
     fake_claude "$(reply_call toolu_1 '{"command":"ls"}')" "$(reply_text Steered.)"
     local r1 r2
     r1=$(jq -c --arg s "$T/s" '.session = $s' <<<"$CC_REQ")
-    claudecode "$r1"
+    claude_turn "$r1"
     r2=$(then_ "$r1" '{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"text","text":"[exit 0]"}]},
         {"type":"text","text":"and also"}]}')
-    claudecode "$r2"
+    claude_turn "$r2"
     check out.jsonl 'of("result")[0] | .stop == "end_turn" and .message.content == [{type:"text", text:"Steered."}]' \
         "not Steered.: $(tail -n1 out.jsonl)"
     [[ $(starts) == 1 ]] || fail "claude started $(starts) times, not once"
@@ -917,14 +965,14 @@ t_claudecode_steer() { # steering beside call results: the same claude, told fir
         | $u != null and $m != null and $u < $m and $e[$m].mcp[1].response.mcp_response.result.content[0].text == "[exit 0]"' \
         "not told first, then the call answered with its result"
 }
-t_claudecode_restart() { # another effort: a new claude, given the history
+t_claude_restart() { # another effort: a new claude, given the history
     fake_claude "$(reply_call toolu_1 '{"command":"ls"}')" "$(reply_text Fresh.)"
     local r1 r2
     r1=$(jq -c --arg s "$T/s" '.session = $s' <<<"$CC_REQ")
-    claudecode "$r1"
+    claude_turn "$r1"
     r2=$(then_ "$r1" '{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"text","text":"[exit 0]"}]},
         {"type":"text","text":"and also"}]}' | jq -c '.effort = "low"')
-    claudecode "$r2"
+    claude_turn "$r2"
     check out.jsonl 'of("result")[0].message.content == [{type:"text", text:"Fresh."}]' "not Fresh.: $(tail -n1 out.jsonl)"
     [[ $(starts) == 2 ]] || fail "claude started $(starts) times, not twice"
     check log.jsonl '($e | map(has("start")) | rindex(true)) as $i | [$e[$i + 1:][] | .in? // empty | select(.type == "user" or .type == "assistant")]
@@ -932,33 +980,33 @@ t_claudecode_restart() { # another effort: a new claude, given the history
           and (.[2] | has("shouldQuery") | not) and (.[2].message.content | map(.type)) == ["tool_result", "text"]
           and (.[2].message.content[0] | has("name") | not)' "the new claude was not given the history: $(tail -n 3 log.jsonl | cut -c1-300)"
 }
-t_claudecode_sigterm() {
+t_claude_sigterm() {
     fake_claude "$(jq -nc --argjson m "$A_START" --argjson a "$(a_text 0 "partial text")" --argjson c "$(a_call 1 toolu_9 '{}')" '{events:([$m] + $a + $c)}')"
     set -m
-    jq -c --arg s "$T/s" '.session = $s' <<<"$CC_REQ" | "$BADBOT/claudecode.sh" >out.jsonl 2>err &
+    jq -c --arg s "$T/s" '.session = $s' <<<"$CC_REQ" | "$BADBOT/providers/claude.sh" >out.jsonl 2>err &
     local pid=$!
     set +m
     echo "$pid" >>pgids
     until_ 10 deltas 1 || fail "no partial text"
     kill -TERM "$pid"
-    until_ 3 gone "$pid" || fail "claudecode.sh still runs 3s after SIGTERM"
+    until_ 3 gone "$pid" || fail "claude.sh still runs 3s after SIGTERM"
     valid out.jsonl
     check out.jsonl '$e[-1] | .type == "result" and .stop == "aborted" and .message.content == [{type:"text", text:"partial text"}]' \
         "not aborted with the partial text alone: $(tail -n1 out.jsonl)"
     until_ 3 empty "$pid" || fail "still running: $(procs "$pid")"
-    [[ ! -e $T/s.d/claudecode/current ]] || fail "claude is still the session's"
+    [[ ! -e $T/s.d/claude/current ]] || fail "claude is still the session's"
 }
-t_claudecode_noclaude() {
+t_claude_noclaude() {
     local dir path=
     while IFS= read -rd: dir; do [[ -x $dir/claude ]] || path+=$dir:; done <<<"$PATH:"
     # bash and jq may share a directory with claude (as in /usr/local/bin): keep these
     mkdir -p nobin && ln -sf "$BASH" nobin/bash && ln -sf "$(command -v jq)" nobin/jq
-    PATH=$T/nobin:${path%:} claudecode "$(jq -c --arg s "$T/s" '.session = $s' <<<"$CC_REQ")"
-    check out.jsonl 'of("error")[0].message == "claudecode: claude is not on PATH" and of("result")[0].stop == "error"' "no error: $(cat out.jsonl)"
+    PATH=$T/nobin:${path%:} claude_turn "$(jq -c --arg s "$T/s" '.session = $s' <<<"$CC_REQ")"
+    check out.jsonl 'of("error")[0].message == "claude: claude is not on PATH" and of("result")[0].stop == "error"' "no error: $(cat out.jsonl)"
 }
-t_claudecode_kernel() {
+t_claude_kernel() {
     fake_claude "$(reply_call toolu_1 '{"command":"echo from-the-tool"}')" "$(reply_text Done.)"
-    BADBOT_PROVIDER=claudecode kernel s
+    BADBOT_PROVIDER=claude kernel s
     type_ hi
     wait_for s '.type == "run_end"'
     finish
@@ -968,16 +1016,16 @@ t_claudecode_kernel() {
         == "[exit 0]\nfrom-the-tool\n"' "the call was not answered with the tool's output"
     [[ $(starts) == 1 ]] || fail "claude started $(starts) times, not once"
 }
-t_claudecode_effort() { # the request's effort is --effort, over params.effort; another effort, another claude
+t_claude_effort() { # the request's effort is --effort, over params.effort; another effort, another claude
     fake_claude "$(reply_text One.)" "$(reply_text Two.)"
     local r1 r2
     r1=$(jq -c --arg s "$T/s" '.session = $s | .effort = "max" | .params.effort = "low"' <<<"$CC_REQ")
-    claudecode "$r1"
+    claude_turn "$r1"
     r2=$(then_ "$r1" '{"role":"user","content":[{"type":"text","text":"again"}]}' | jq -c '.effort = "medium"')
-    claudecode "$r2"
+    claude_turn "$r2"
     check log.jsonl '[$e[] | .start? // empty | index("--effort") as $i | .[$i + 1]] == ["max", "medium"]' \
         "not started with --effort max, then medium: $(grep start log.jsonl | cut -c1-300)"
-    "$BADBOT/claudecode.sh" --list model | jq -e '.choices == ["fable", "opus", "sonnet", "haiku"] and .default == ""' >/dev/null ||
+    "$BADBOT/providers/claude.sh" --list model | jq -e '.choices == ["fable", "opus", "sonnet", "haiku"] and .default == ""' >/dev/null ||
         fail "not claude's aliases"
 }
 
@@ -1092,7 +1140,7 @@ for name in "${selected[@]}"; do
         report "$name" "${mock_error%%:*}" "${mock_error#*: }"
         continue
     fi
-    if [[ $name == claudecode_* ]] && ! command -v python3 >/dev/null; then
+    if [[ $name == claude_* ]] && ! command -v python3 >/dev/null; then
         report "$name" SKIP "python3 not found"
         continue
     fi

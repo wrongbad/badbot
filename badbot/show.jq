@@ -65,6 +65,7 @@ foreach (inputs | fromjson? // empty) as $e ({calls: {}, early: {}, open: false,
        elif ($e.type == "set" or $e.type == "list") and .typing then .prompt = false
        elif $e.type == "usage" then # typed: the terminal ended the line
          .prompt = false | .out = green("usage") + "context \($e | (.input // 0) + (.cache_read // 0) + (.cache_write // 0))\n"
+       elif $e.type == "thinking" then .out = cyan("thinking") + "\n"
        elif $e.type == "settings" then
          .out = green("using") + "\($e.provider), model \(value($e.model; "")), effort \(value($e.effort; ""))\n"
        elif $e.type == "options" then
