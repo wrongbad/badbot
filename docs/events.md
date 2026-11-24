@@ -61,6 +61,7 @@ everyone.
 | `S.d/request.json` | the last request sent to a provider |
 | `S.d/calls/ID.out` | a call's stdout and stderr, all of it (in ID, anything but letters, digits, `_` and `-` becomes `_`) |
 | `S.d/calls/ID.pid`, `.status`, `.killed`, `.job` | its process, how it ended, whether it was killed, and whether it went on as a job |
+| `S.d/claudecode/` | the `claudecode` provider's: `state.json` (what its `claude` holds), and a directory for the `claude` it keeps: its stdin (a fifo), stdout (`out`), stderr, pid, and the calls it waits on |
 
 ## Providers
 
@@ -94,3 +95,15 @@ last, the one that counts:
 
 On `SIGTERM` it stops, and writes its `result` with `stop: aborted` and what it
 has so far. A provider that exits without a `result` ends the turn `error`.
+
+A provider runs once per turn, but what it starts need not: `claudecode`
+keeps a `claude` process for the session in `S.d/claudecode`, and ends it when
+the model actor, its parent, is gone. Each turn it checks that the request
+goes on from what that `claude` holds, and starts a new one, given the whole
+conversation, when it does not.
+
+| Provider | `params` it reads |
+|---|---|
+| `openai` | any: merged into the request body |
+| `anthropic` | any: merged into the request body over its defaults (`thinking`, `output_config`, `fallbacks`, `cache_control`, `max_tokens`); `null` leaves a field out |
+| `claudecode` | `effort` (`--effort`), `max_tokens` (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`) |

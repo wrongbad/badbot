@@ -82,6 +82,16 @@ export OPENAI_API_KEY=sk-... BADBOT_MODEL=gpt-5   # or OPENAI_MODEL
 badbot [session]
 ```
 
+Or with Claude, by API key or on a Claude subscription, through Claude Code:
+
+```bash
+BADBOT_PROVIDER=anthropic ANTHROPIC_API_KEY=sk-ant-... badbot
+```
+
+```bash
+BADBOT_PROVIDER=claudecode BADBOT_MODEL=opus badbot
+```
+
 Type, and it answers. Type again while it works, and it reads you at its next
 step, without stopping. Ctrl-C quits at once; Ctrl-D once it is done. It
 shows its session file when it starts: give it that file to carry on where
@@ -90,14 +100,21 @@ lists them, and a script can send it commands, as JSON events, on stdin.
 
 | Variable | Default | |
 |---|---|---|
-| `BADBOT_PROVIDER` | `openai` | [`openai`](badbot/openai.sh): any Chat Completions server, by `OPENAI_BASE_URL`; [`echo`](badbot/echo.sh): a stand-in, no key needed, that echoes you, and asks for shell commands when a line starts with `!` |
-| `BADBOT_MODEL` | `OPENAI_MODEL` | the model |
+| `BADBOT_PROVIDER` | `openai` | [`openai`](badbot/openai.sh): any Chat Completions server, by `OPENAI_BASE_URL`; [`anthropic`](badbot/anthropic.sh): Anthropic's Messages API, by `ANTHROPIC_API_KEY` (and `ANTHROPIC_BASE_URL`); [`claudecode`](badbot/claudecode.sh): the `claude` CLI on your PATH, on your Claude subscription; [`echo`](badbot/echo.sh): a stand-in, no key needed, that echoes you, and asks for shell commands when a line starts with `!` |
+| `BADBOT_MODEL` | by provider | the model: for `openai`, `OPENAI_MODEL`; for `anthropic`, `ANTHROPIC_MODEL`, else `claude-opus-5-5`; for `claudecode`, an alias (`fable`, `opus`, `sonnet`, `haiku`) or an id, else Claude Code's default |
+
+`anthropic` asks for adaptive thinking, high effort, server-side fallbacks and
+prompt caching, and retries an overloaded or rate-limited API before any text
+comes. `claudecode` keeps one `claude -p` for the session, between turns, and
+gives it badbot's tools over MCP (the model sees `mcp__badbot__shell`); Claude
+Code's own tools, settings, CLAUDE.md and memory are off. Claude Code adds its
+own lines to the system prompt, and thinking arrives without its text.
 
 The system prompt is what [`badbot/system-prompt.sh`](badbot/system-prompt.sh)
 prints.
 
 The tests take about ten seconds, with no key and no network (python3 for the
-OpenAI provider's; `-v` for details, names to run some):
+providers' mock server and stand-in `claude`; `-v` for details, names to run some):
 
 ```bash
 tests/test.sh
@@ -178,7 +195,9 @@ Three ideas live in these lines and never leave:
   only be structure.
 - **A provider is replaceable.** `BADBOT_PROVIDER=echo` runs the stand-in;
   unset, it is [`badbot/openai.sh`](badbot/openai.sh), which talks to a real
-  model with `curl`. Nothing in the loop knows which model it talks to.
+  model with `curl`; [`anthropic`](badbot/anthropic.sh) and
+  [`claudecode`](badbot/claudecode.sh) talk to Claude. Nothing in the loop
+  knows which model it talks to.
 
 ### 2. Hands
 
@@ -614,7 +633,8 @@ built to be read, not to be fast, and where it is weaker, plainly:
   every streamed piece of text as well as the message it adds up to.
 - **One tool, text only.** `shell` is the only tool, results are text, and
   there is no way to write to a job's stdin. A provider is started fresh each
-  turn, with the whole conversation.
+  turn, with the whole conversation (`claudecode` keeps its `claude` between
+  turns, so that Claude Code's prompt cache holds, and gives it only what is new).
 
 What it shows is the part that does not depend on the language: one stream,
 one order, actors that only react to events, and slow work pushed into

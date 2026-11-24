@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # tests/test.sh: badbot's tests, all at once, in parallel. No network, no key:
-# the echo provider, and for openai.sh a mock server (tests/mock.py, python3).
+# the echo provider; for openai.sh and anthropic.sh a mock server (tests/mock.py),
+# and for claudecode.sh a stand-in claude (tests/bin/claude), both python3.
 #   tests/test.sh [-v] [-l] [NAME...]
 #     NAME   run only these tests (NAME, or NAME_*: "openai" runs every openai_ test)
 #     -v     verbose (or TEST_VERBOSE=1): on failure, show the test's log and
@@ -15,7 +16,8 @@ TESTS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(dirname "$TESTS")
 BADBOT=$REPO/badbot
 exec 3>&- 4>&- # a kernel's fds, if this runs in one
-unset BADBOT_SESSION BADBOT_MODEL OPENAI_API_KEY OPENAI_BASE_URL OPENAI_MODEL
+unset BADBOT_SESSION BADBOT_MODEL OPENAI_API_KEY OPENAI_BASE_URL OPENAI_MODEL \
+    ANTHROPIC_API_KEY ANTHROPIC_BASE_URL ANTHROPIC_MODEL
 export BADBOT_PROVIDER=echo NO_COLOR=1
 TIMEOUT=${TEST_TIMEOUT:-60} # seconds, for any one test
 VERBOSE=
@@ -140,7 +142,10 @@ call() { printf '!@shell %s' "$(jq -nc "$@")"; }
 TESTS_ALL=(chat tools status job barge abort abort_tree abort_jobs bad_send resume
     sigint sighup sigterm big media actors nobus ids subagent killtree skills
     openai_text openai_tools openai_noindex openai_stopcalls openai_401 openai_strerror
-    openai_nospace openai_crlf openai_sigterm openai_request openai_kernel)
+    openai_nospace openai_crlf openai_sigterm openai_request openai_kernel
+    anthropic_text anthropic_tools anthropic_401 anthropic_retry anthropic_midstream
+    anthropic_sigterm anthropic_request anthropic_kernel
+    claudecode_turns claudecode_restart claudecode_sigterm claudecode_noclaude claudecode_kernel)
 
 t_chat() {
     kernel s
@@ -600,6 +605,202 @@ t_openai_kernel() {
         "the openai kernel did not answer Hello"
 }
 
+# anthropic.sh, alone, against the mock: REQ in, its events in out.jsonl.
+anthropic() { # SCENARIO [REQUEST]
+    printf '%s\n' "${2:-$REQ}" | ANTHROPIC_BASE_URL=http://127.0.0.1:$MOCK_PORT/$1 ANTHROPIC_API_KEY=sk-test \
+        "$BADBOT/anthropic.sh" >out.jsonl 2>err || fail "anthropic.sh exited $?"
+    valid out.jsonl
+    check out.jsonl '(of("result") | length) == 1 and $e[-1].type == "result"' "the last event is not its one result"
+}
+t_anthropic_text() {
+    anthropic a-text
+    check out.jsonl '[of("text_delta")[].text] == ["Hel", "lo"]' "deltas are not Hel, lo"
+    check out.jsonl 'of("result")[0] | .stop == "end_turn" and .message == {role:"assistant", content:[
+        {type:"thinking", thinking:"Hmm.", signature:"sig"}, {type:"text", text:"Hello"}]}
+        and .usage == {input:6, output:2, cache_read:4, cache_write:0}' "not the result: $(tail -n1 out.jsonl)"
+    jq -e '.model == "test-model" and .stream == true and .max_tokens == 64000 and .system == "be brief"
+        and .messages == [{role:"user", content:[{type:"text", text:"hi"}]}] and (has("tools") | not)
+        and .thinking == {type:"adaptive", display:"summarized"} and .output_config == {effort:"high"}
+        and .fallbacks == "default" and .cache_control == {type:"ephemeral"}' \
+        "$MOCK_DIR/request-a-text.json" >/dev/null || fail "the request body is wrong: $(cat "$MOCK_DIR/request-a-text.json")"
+    [[ $(<"$MOCK_DIR/auth-a-text") == sk-test ]] || fail "no x-api-key: sk-test"
+    [[ $(<"$MOCK_DIR/beta-a-text") == server-side-fallback-2026-07-01 ]] || fail "no fallback beta header"
+}
+t_anthropic_tools() {
+    anthropic a-tools
+    check out.jsonl 'of("result")[0] | .stop == "tool_use" and .message.content == [{type:"text", text:"Let me look."},
+        {type:"tool_use", id:"toolu_1", name:"shell", input:{command:"ls"}},
+        {type:"tool_use", id:"toolu_2", name:"shell", input:{}}]' "not the calls: $(tail -n1 out.jsonl)"
+}
+t_anthropic_401() {
+    anthropic a-unauthorized
+    check out.jsonl 'of("error") | length == 1 and .[0].message == "anthropic: invalid x-api-key"' "no error naming the 401: $(head -n1 out.jsonl)"
+    check out.jsonl 'of("result")[0] | .stop == "error" and .message.content == []' "the result is not an error"
+    [[ $(<"$MOCK_DIR/count-a-unauthorized") == 1 ]] || fail "a 401 was tried again"
+}
+t_anthropic_retry() {
+    anthropic a-overloaded
+    [[ $(<"$MOCK_DIR/count-a-overloaded") == 3 ]] || fail "not 3 requests: $(<"$MOCK_DIR/count-a-overloaded")"
+    check out.jsonl 'of("error") == [] and of("result")[0].stop == "end_turn"' "no answer after two 529s: $(tail -n1 out.jsonl)"
+}
+t_anthropic_midstream() {
+    anthropic a-midstream
+    check out.jsonl 'of("error") | length == 1 and .[0].message == "anthropic: bad thing"' "no error from the stream: $(head -n1 out.jsonl)"
+    check out.jsonl 'of("result")[0].stop == "error"' "the result is not an error"
+}
+t_anthropic_sigterm() {
+    set -m # its own group: anthropic.sh, curl, jq
+    ANTHROPIC_BASE_URL=http://127.0.0.1:$MOCK_PORT/a-slow ANTHROPIC_API_KEY=sk-test \
+        "$BADBOT/anthropic.sh" <<<"$REQ" >out.jsonl 2>err &
+    local pid=$!
+    set +m
+    echo "$pid" >>pgids
+    until_ 10 deltas 2 || fail "no partial text"
+    kill -TERM "$pid"
+    until_ 3 gone "$pid" || fail "anthropic.sh still runs 3s after SIGTERM"
+    valid out.jsonl
+    check out.jsonl '$e[-1] | .type == "result" and .stop == "aborted" and .message.content == [{type:"text", text:"partial text"}]' \
+        "not aborted with the partial text alone: $(tail -n1 out.jsonl)"
+    until_ 3 empty "$pid" || fail "still running: $(procs "$pid")"
+}
+t_anthropic_request() {
+    local req
+    req=$(jq -c '.messages += [{role:"assistant", content:[{type:"thinking", thinking:"", signature:"s1"}, {type:"text", text:"ok"},
+            {type:"tool_use", id:"t1", name:"shell", input:{command:"ls"}}]},
+        {role:"user", content:[{type:"tool_result", tool_use_id:"t1", is_error:false, content:[{type:"text", text:"[exit 0]\nfile"}],
+            name:"shell", status:"exit 0", ran:0}, {type:"x-note", text:"not for the API"}, {type:"text", text:"thanks"}]}]
+        | .params = {fallbacks:null, output_config:{effort:"low"}}' <<<"$REQ" |
+        jq -c --slurpfile t "$BADBOT/tools.json" '.tools = ($t[0] | map(del(.program)))')
+    anthropic a-request "$req"
+    jq -e '.messages[1:] == [{role:"assistant", content:[{type:"thinking", thinking:"", signature:"s1"}, {type:"text", text:"ok"},
+            {type:"tool_use", id:"t1", name:"shell", input:{command:"ls"}}]},
+        {role:"user", content:[{type:"tool_result", tool_use_id:"t1", is_error:false, content:[{type:"text", text:"[exit 0]\nfile"}]},
+            {type:"text", text:"thanks"}]}]
+        and (.tools | length == 1 and .[0].name == "shell" and .[0].eager_input_streaming == true and (.[0] | has("program") | not))
+        and (has("fallbacks") | not) and .output_config == {effort:"low"}' "$MOCK_DIR/request-a-request.json" >/dev/null ||
+        fail "the request is not in the API's terms: $(cat "$MOCK_DIR/request-a-request.json")"
+    [[ ! -s $MOCK_DIR/beta-a-request ]] || fail "a beta header without fallbacks: $(<"$MOCK_DIR/beta-a-request")"
+}
+t_anthropic_kernel() {
+    BADBOT_PROVIDER=anthropic BADBOT_MODEL=test-model ANTHROPIC_API_KEY=sk-test \
+        ANTHROPIC_BASE_URL=http://127.0.0.1:$MOCK_PORT/a-kernel kernel s
+    type_ hi
+    wait_for s '.type == "run_end"'
+    finish
+    valid s
+    check s 'of("run_end")[0].reason == "done" and (of("message") | map(select(.source == "assistant"))[0].message.content
+        | map(select(.type == "text")) | text) == "Hello"' "the anthropic kernel did not answer Hello"
+}
+
+# claudecode.sh, against tests/bin/claude: replies.json is what it says, in
+# order; log.jsonl what it was started with and read. Stream events:
+A_START='{"type":"message_start","message":{"usage":{"input_tokens":5}}}'
+a_text() { # INDEX TEXT: a text block, whole
+    jq -nc --argjson i "$1" --arg t "$2" '{type:"content_block_start", index:$i, content_block:{type:"text", text:""}},
+        {type:"content_block_delta", index:$i, delta:{type:"text_delta", text:$t}}' | jq -sc .
+}
+a_call() { # INDEX ID INPUT
+    jq -nc --argjson i "$1" --arg id "$2" --arg in "$3" '[{type:"content_block_start", index:$i,
+        content_block:{type:"tool_use", id:$id, name:"mcp__badbot__shell", input:{}}},
+        {type:"content_block_delta", index:$i, delta:{type:"input_json_delta", partial_json:$in}}]'
+}
+a_stop() { jq -nc --arg s "$1" '[{type:"message_delta", delta:{stop_reason:$s}, usage:{output_tokens:3}}, {type:"message_stop"}]'; }
+reply_text() { jq -nc --arg t "$1" --argjson a "$(a_text 0 "$1")" --argjson s "$(a_stop end_turn)" --argjson m "$A_START" \
+    '{events:([$m] + $a + $s), result:{result:$t}}'; }
+reply_call() { jq -nc --arg id "$1" --argjson c "$(a_call 0 "$1" "$2")" --argjson s "$(a_stop tool_use)" --argjson m "$A_START" \
+    '{events:([$m] + $c + $s), calls:[$id]}'; }
+fake_claude() { # REPLY...: the replies, in order
+    export PATH=$TESTS/bin:$PATH FAKE_CLAUDE_LOG=$T/log.jsonl FAKE_CLAUDE_REPLY=$T/replies.json
+    jq -sc . <<<"$(printf '%s\n' "$@")" >replies.json
+}
+CC_REQ=$(jq -c '.session = "SESSION" | .model = "opus"' <<<"$REQ")
+claudecode() { # REQUEST: one turn, its events in out.jsonl
+    printf '%s\n' "$1" | "$BADBOT/claudecode.sh" >out.jsonl 2>err || fail "claudecode.sh exited $?"
+    valid out.jsonl
+    check out.jsonl '(of("result") | length) == 1 and $e[-1].type == "result"' "the last event is not its one result: $(cat out.jsonl)"
+}
+then_() { # REQUEST MESSAGE...: REQUEST, with out.jsonl's reply and the messages after it
+    jq -c --slurpfile o out.jsonl '.messages += [$o[-1].message] + $ARGS.positional' --jsonargs "${@:2}" <<<"$1"
+}
+starts() { count log.jsonl 'has("start")'; }
+t_claudecode_turns() {
+    fake_claude "$(reply_call toolu_1 '{"command":"ls"}')" "$(reply_text Done.)" "$(reply_text Again.)"
+    local r1 r2 r3
+    r1=$(jq -c --arg s "$T/s" --slurpfile t "$BADBOT/tools.json" '.session = $s | .tools = ($t[0] | map(del(.program)))' <<<"$CC_REQ")
+    claudecode "$r1"
+    check out.jsonl 'of("result")[0] | .stop == "tool_use" and .message.content == [{type:"tool_use", id:"toolu_1", name:"shell", input:{command:"ls"}}]' \
+        "not the call, unprefixed: $(tail -n1 out.jsonl)"
+    check log.jsonl '$e[0].start as $a | ($a | index("--model")) as $m | $a[$m + 1] == "opus"
+        and ($a | index("--allowedTools")) as $t | $a[$t + 1] == "mcp__badbot__shell"
+        and ($a | index("--system-prompt")) as $s | $a[$s + 1] == "be brief"' "not started with the model, tools and system prompt"
+    check log.jsonl '[$e[] | .mcp? // empty | select(.[0].method == "tools/list")][0][1].response.mcp_response.result.tools
+        | length == 1 and .[0].name == "shell" and .[0].inputSchema.required == ["command"]' "tools/list did not list shell"
+    r2=$(then_ "$r1" '{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":false,
+        "content":[{"type":"text","text":"[exit 0]\nfile"}],"name":"shell","status":"exit 0","ran":0}]}')
+    claudecode "$r2"
+    check out.jsonl 'of("result")[0] | .stop == "end_turn" and .message.content == [{type:"text", text:"Done."}]' "not Done.: $(tail -n1 out.jsonl)"
+    check log.jsonl '[$e[] | .mcp? // empty | select(.[0].method == "tools/call")] | length == 1
+        and .[0][1].response.mcp_response.result == {isError:false, content:[{type:"text", text:"[exit 0]\nfile"}]}' \
+        "the call was not answered with its result"
+    r3=$(then_ "$r2" '{"role":"user","content":[{"type":"text","text":"again"}]}')
+    claudecode "$r3"
+    check out.jsonl 'of("result")[0].message.content == [{type:"text", text:"Again."}]' "not Again.: $(tail -n1 out.jsonl)"
+    [[ $(starts) == 1 ]] || fail "claude started $(starts) times, not once"
+    check log.jsonl '[$e[] | .in? // empty | select(.type == "user")] | map(.message.content[0].text) == ["hi", "again"]' \
+        "claude was not given hi, then again"
+}
+t_claudecode_restart() { # steering beside call results: a new claude, given the history
+    fake_claude "$(reply_call toolu_1 '{"command":"ls"}')" "$(reply_text Fresh.)"
+    local r1 r2
+    r1=$(jq -c --arg s "$T/s" '.session = $s' <<<"$CC_REQ")
+    claudecode "$r1"
+    r2=$(then_ "$r1" '{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"text","text":"[exit 0]"}]},
+        {"type":"text","text":"and also"}]}')
+    claudecode "$r2"
+    check out.jsonl 'of("result")[0].message.content == [{type:"text", text:"Fresh."}]' "not Fresh.: $(tail -n1 out.jsonl)"
+    [[ $(starts) == 2 ]] || fail "claude started $(starts) times, not twice"
+    check log.jsonl '($e | map(has("start")) | rindex(true)) as $i | [$e[$i + 1:][] | .in? // empty | select(.type == "user" or .type == "assistant")]
+        | length == 3 and .[0].shouldQuery == false and .[1].type == "assistant" and .[1].message.content[0].name == "mcp__badbot__shell"
+          and (.[2] | has("shouldQuery") | not) and (.[2].message.content | map(.type)) == ["tool_result", "text"]
+          and (.[2].message.content[0] | has("name") | not)' "the new claude was not given the history: $(tail -n 3 log.jsonl | cut -c1-300)"
+}
+t_claudecode_sigterm() {
+    fake_claude "$(jq -nc --argjson m "$A_START" --argjson a "$(a_text 0 "partial text")" --argjson c "$(a_call 1 toolu_9 '{}')" '{events:([$m] + $a + $c)}')"
+    set -m
+    jq -c --arg s "$T/s" '.session = $s' <<<"$CC_REQ" | "$BADBOT/claudecode.sh" >out.jsonl 2>err &
+    local pid=$!
+    set +m
+    echo "$pid" >>pgids
+    until_ 10 deltas 1 || fail "no partial text"
+    kill -TERM "$pid"
+    until_ 3 gone "$pid" || fail "claudecode.sh still runs 3s after SIGTERM"
+    valid out.jsonl
+    check out.jsonl '$e[-1] | .type == "result" and .stop == "aborted" and .message.content == [{type:"text", text:"partial text"}]' \
+        "not aborted with the partial text alone: $(tail -n1 out.jsonl)"
+    until_ 3 empty "$pid" || fail "still running: $(procs "$pid")"
+    [[ ! -e $T/s.d/claudecode/current ]] || fail "claude is still the session's"
+}
+t_claudecode_noclaude() {
+    local dir path=
+    while IFS= read -rd: dir; do [[ -x $dir/claude ]] || path+=$dir:; done <<<"$PATH:"
+    # bash and jq may share a directory with claude (as in /usr/local/bin): keep these
+    mkdir -p nobin && ln -sf "$BASH" nobin/bash && ln -sf "$(command -v jq)" nobin/jq
+    PATH=$T/nobin:${path%:} claudecode "$(jq -c --arg s "$T/s" '.session = $s' <<<"$CC_REQ")"
+    check out.jsonl 'of("error")[0].message == "claudecode: claude is not on PATH" and of("result")[0].stop == "error"' "no error: $(cat out.jsonl)"
+}
+t_claudecode_kernel() {
+    fake_claude "$(reply_call toolu_1 '{"command":"echo from-the-tool"}')" "$(reply_text Done.)"
+    BADBOT_PROVIDER=claudecode kernel s
+    type_ hi
+    wait_for s '.type == "run_end"'
+    finish
+    valid s
+    check s 'of("run_end")[0].reason == "done" and (of("turn_end") | map(.stop)) == ["tool_use", "end_turn"]' "not a call, then an answer"
+    check log.jsonl '[$e[] | .mcp? // empty | select(.[0].method == "tools/call")][0][1].response.mcp_response.result.content[0].text
+        == "[exit 0]\nfrom-the-tool\n"' "the call was not answered with the tool's output"
+    [[ $(starts) == 1 ]] || fail "claude started $(starts) times, not once"
+}
+
 # ---------------------------------------------------------------- runner
 
 usage() { sed -n '2,12s/^# \{0,1\}//p' "${BASH_SOURCE[0]}"; }
@@ -663,7 +864,7 @@ run_test() {
 }
 
 openai_needed=
-for name in "${selected[@]}"; do [[ $name == openai_* ]] && openai_needed=1; done
+for name in "${selected[@]}"; do [[ $name == openai_* || $name == anthropic_* ]] && openai_needed=1; done
 MOCK_DIR=$ROOT/mock MOCK_PORT= mock_error=
 if [[ $openai_needed ]]; then
     if ! command -v python3 >/dev/null; then
@@ -704,8 +905,12 @@ report() { # NAME STATUS [REASON]
 }
 
 for name in "${selected[@]}"; do
-    if [[ $name == openai_* && $mock_error ]]; then
+    if [[ ($name == openai_* || $name == anthropic_*) && $mock_error ]]; then
         report "$name" "${mock_error%%:*}" "${mock_error#*: }"
+        continue
+    fi
+    if [[ $name == claudecode_* ]] && ! command -v python3 >/dev/null; then
+        report "$name" SKIP "python3 not found"
         continue
     fi
     mkdir -p "$ROOT/$name/tmp"
