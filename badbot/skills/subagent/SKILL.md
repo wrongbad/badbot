@@ -19,8 +19,9 @@ echo "TASK" | BADBOT [SESSION]
 - `SESSION`: its conversation, one JSON event per line, continued if it
   exists and created if not. Leave it out for a fresh one in `$TMPDIR`; either
   way, its output starts with `session PATH`.
-- `BADBOT_PROVIDER`, `BADBOT_MODEL` in the environment pick another provider
-  or model; otherwise it uses yours.
+- `BADBOT_PROVIDER`, `BADBOT_MODEL`, `BADBOT_EFFORT` in the environment pick
+  another provider, model or effort; otherwise it uses yours, as `/provider`,
+  `/model` and `/effort` last set them.
 
 It works in your directory (`cd DIR && echo … | BADBOT` for another), with
 your environment, and runs commands like you do. Like you, it stops and asks

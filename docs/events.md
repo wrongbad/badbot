@@ -43,7 +43,7 @@ everyone.
 | `turn_start` | `run`, `turn` | `continue` |
 | `text_delta`, and anything else a provider writes | as the provider writes them | streaming; for display |
 | `message` | `source: assistant`; `run`, `turn`, `message` | the provider's `result`; `tool_use` blocks kept only when `stop` is `tool_use`; none when it has no content |
-| `settings` | `provider`, `model`, `effort` | a `set` changed them: what the next turn asks for. Resuming, the last one is what the session starts with, over the environment |
+| `settings` | `provider`, `model`, `effort` | a `set` changed them: what the next turn asks for. Resuming, the last one is what the session starts with, over the environment. `tools` runs every call with them as `BADBOT_PROVIDER`, `BADBOT_MODEL` and `BADBOT_EFFORT`, so a sub-agent asks the same |
 | `options` | `key`, `provider`, `current`, `default`, `choices` | a `list`: the providers (the scripts whose second line says `# NAME: a provider`), or what the provider's `--list` printed |
 | `turn_end` | `run`, `turn`; `stop`: `end_turn`, `tool_use`, `max_tokens`, `aborted`, `error`…; `usage` | after the message; `error` when the provider gave no result, or one that does not read |
 

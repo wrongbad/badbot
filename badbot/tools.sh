@@ -2,11 +2,24 @@
 # tools: runs every tool call an assistant message asks for, each in a worker.
 # Kills one on cancel (the inbox decides which), and all at exit. Calls run in
 # the kernel's process group, so Ctrl-C reaches them like everything else.
+# They run with the session's settings, so a badbot one starts (a sub-agent)
+# asks the same provider, model and effort as this one.
 #   echo '{"type":"message","source":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"shell","input":{"command":"date"}}]}}' | badbot/tools.sh
 . "$(dirname "$0")/lib.sh"
 
 declare -A running=() # call id: its worker's pid
 mkdir -p "$session.d/calls"
+
+# use_settings EVENT: a settings event's provider, model and effort, exported
+# as BADBOT_PROVIDER, BADBOT_MODEL and BADBOT_EFFORT, for every call from now on.
+# They start as the environment says, or as a resumed session last left them.
+use_settings() {
+    local p m e
+    { IFS= read -r p && IFS= read -r m && IFS= read -r e; } < <(jq -r '.provider // "", .model // "", .effort // ""' <<<"$1" 2>/dev/null) || return
+    [[ $p ]] && export BADBOT_PROVIDER=$p BADBOT_MODEL=$m BADBOT_EFFORT=$e
+}
+last=$(grep '^{"type":"settings"' "$session" 2>/dev/null | tail -n 1)
+[[ $last ]] && use_settings "$last"
 
 # A call's files: $c.out (stdout and stderr), $c.pid, $c.status, and $c.killed,
 # which kill_call leaves in case the call has not started yet: whichever of the
@@ -110,6 +123,7 @@ while IFS= read -r line; do
                 run_call "$call" >/dev/null & # workers say on fd 3; stdout is the next actor's
                 running[$(jq -r .id <<<"$call")]=$!
             done < <(jq -c '.message.content[] | select(.type == "tool_use")' <<<"$line") ;;
+        '{"type":"settings"'*) use_settings "$line" ;;
         '{"type":"job"'*) [[ $line =~ $CALL ]] && : >"$(calls "${BASH_REMATCH[1]}").job" ;; # its timer need not say so too
         '{"type":"cancel"'*) [[ $line =~ $CALL && ${running[${BASH_REMATCH[1]}]-} ]] && kill_call "${BASH_REMATCH[1]}" ;;
         '{"type":"block"'*) [[ $line =~ $CALL ]] && unset 'running[${BASH_REMATCH[1]}]' ;;

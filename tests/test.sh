@@ -140,7 +140,7 @@ call() { printf '!@shell %s' "$(jq -nc "$@")"; }
 
 # ---------------------------------------------------------------- tests
 TESTS_ALL=(chat tools status job barge abort abort_tree abort_jobs bad_send resume
-    sigint sighup sigterm big media actors nobus ids subagent killtree skills settings
+    sigint sighup sigterm big media actors nobus ids subagent killtree skills settings settings_env
     openai_text openai_tools openai_noindex openai_stopcalls openai_401 openai_strerror
     openai_nospace openai_crlf openai_sigterm openai_request openai_kernel openai_list
     anthropic_text anthropic_tools anthropic_401 anthropic_retry anthropic_midstream
@@ -344,6 +344,21 @@ t_settings() { # /provider, /model, /effort: listed, checked, set, asked for, an
     jq -e '.model == "x" and .effort == "high"' s.d/request.json >/dev/null ||
         fail "resumed, the request does not ask for model x, effort high: $(jq -c '{model, effort}' s.d/request.json)"
     check s 'of("options")[-1] | .provider == "echo" and .current == "high" and .choices == []' "echo lists efforts"
+}
+
+t_settings_env() { # calls, and so sub-agents, run with the session's settings, resumed too
+    local env='printf %s "$BADBOT_PROVIDER/$BADBOT_MODEL/$BADBOT_EFFORT" >"'"$T"'/env"'
+    kernel s
+    type_ '/model x' '/effort high' "$(call --arg c "$env" '{command:$c}')"
+    wait_for s '.type == "run_end"'
+    finish
+    [[ $(<"$T/env") == echo/x/high ]] || fail "a call ran with $(<"$T/env"), not echo/x/high"
+    rm "$T/env"
+    BADBOT_MODEL=y BADBOT_EFFORT=low kernel s
+    type_ "$(call --arg c "$env" '{command:$c}')"
+    wait_for s '.type == "run_end" and .run == 2'
+    finish
+    [[ $(<"$T/env") == echo/x/high ]] || fail "resumed, a call ran with $(<"$T/env"), not echo/x/high"
 }
 
 # Ctrl-C, SIGHUP, SIGTERM: the kernel's process group, with a call and a long timer running.
@@ -878,11 +893,13 @@ for arg; do
         -h | --help) usage; exit 0 ;;
         -*) usage >&2; exit 2 ;;
         *)
-            n=${#selected[@]}
-            for t in "${TESTS_ALL[@]}"; do
-                [[ $t == $arg || $t == ${arg}_* ]] && selected+=("$t")
+            found=
+            for t in "${TESTS_ALL[@]}"; do # each test once, however many names select it
+                [[ $t == $arg || $t == ${arg}_* ]] || continue
+                found=1
+                [[ " ${selected[*]-} " == *" $t "* ]] || selected+=("$t")
             done
-            ((${#selected[@]} > n)) || { echo "tests: no test named $arg (-l lists them)" >&2; exit 2; }
+            [[ $found ]] || { echo "tests: no test named $arg (-l lists them)" >&2; exit 2; }
             ;;
     esac
 done
