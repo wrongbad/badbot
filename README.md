@@ -97,6 +97,8 @@ step, without stopping. Ctrl-C quits at once; Ctrl-D once it is done. It
 shows its session file when it starts: give it that file to carry on where
 it stopped. The session holds every event: [docs/events.md](docs/events.md)
 lists them, and a script can send it commands, as JSON events, on stdin.
+It exits 1 if its last run ended in an error, such as the provider failing,
+and 0 otherwise.
 
 | Variable | Default | |
 |---|---|---|

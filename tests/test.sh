@@ -140,7 +140,7 @@ call() { printf '!@shell %s' "$(jq -nc "$@")"; }
 
 # ---------------------------------------------------------------- tests
 TESTS_ALL=(chat tools status job barge abort abort_tree abort_jobs bad_send resume
-    sigint sighup sigterm big media actors nobus ids subagent killtree skills settings settings_env usage replace killtree_sh
+    sigint sighup sigterm big media actors nobus ids subagent killtree skills settings settings_env usage replace killtree_sh exit_error
     openai_text openai_tools openai_noindex openai_stopcalls openai_401 openai_strerror
     openai_nospace openai_crlf openai_sigterm openai_request openai_kernel openai_list
     anthropic_text anthropic_tools anthropic_401 anthropic_retry anthropic_midstream
@@ -376,6 +376,17 @@ t_usage() { # /usage: the last turn's usage, as is; shown as the context it adds
     check s 'of("usage")[-1] == {type:"usage", input:1, output:2, cache_read:30, cache_write:4}' \
         "not the last turn's usage: $(get s 'of("usage")[-1] | tojson')"
     grep -qx 'usage context 35' s.stdout || fail "context 35 not shown: $(grep usage s.stdout)"
+}
+
+t_exit_error() { # exit 1 when this kernel's last run ended in an error; not for one before it
+    local rc
+    echo hi | BADBOT_PROVIDER=nope "$BADBOT/badbot.sh" s >out 2>&1; rc=$?
+    ((rc == 1)) || fail "a failed run exited $rc, not 1: $(<out)"
+    has s '.type == "run_end" and .reason == "error"' || fail "no run_end error"
+    "$BADBOT/badbot.sh" s </dev/null >out 2>&1; rc=$?
+    ((rc == 0)) || fail "resumed with no run, it exited $rc: the error was an earlier kernel's"
+    echo again | "$BADBOT/badbot.sh" s >out 2>&1; rc=$?
+    ((rc == 0)) || fail "resumed, a run that is done exited $rc: $(<out)"
 }
 
 t_killtree_sh() { # killtree is a command: a shell with no bash functions can run it

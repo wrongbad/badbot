@@ -59,6 +59,11 @@ its commands and their results. When it exits, all of that arrives as the
 job's result (or, past 100000 bytes, where to find it). Asking it to end with
 a summary makes the end easy to read with `tail`.
 
+`exit 0` means its last run ended as it chose to. `exit 1` means the run
+ended in an error, such as its provider failing (no credits, no network), so
+the task is not done: read the end of its output for the `error` line, and
+carry it on, on the same session, once the cause is fixed.
+
 ## Watching it
 
 ```
