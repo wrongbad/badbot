@@ -10,8 +10,8 @@
 # Code continues a conversation's prompt cache only from its own previous
 # request, so a new claude for every turn would write the whole history to the
 # cache again each time. Each turn is the next step of that one conversation;
-# when the request cannot be one (another model, a changed history, steering
-# beside call results), a new claude starts and is given the history.
+# when the request cannot be one (another model, a changed history), a new
+# claude starts and is given the history.
 #
 # Claude Code's own tools, settings, CLAUDE.md, memory, skills and other MCP
 # servers are off. badbot's tools are an MCP server this script hosts over
@@ -67,7 +67,9 @@ stop_claude() {
 }
 
 # The plan for this turn. calls: the request answers the calls claude waits
-# on, and nothing else; feed: claude ended its turn, and the request goes on
+# on, and may say more beside them (steering): that goes to claude first, as a
+# user message, which claude takes in with the results, in the same turn of its
+# own; feed: claude ended its turn, and the request goes on
 # from it with new messages; start: a new claude, given the whole history.
 # chunks: the stream-json lines to write; every user message but the last
 # asks for no reply, and claude acknowledges each with a result line, so a
@@ -91,11 +93,14 @@ jq -n -L "$here" --arg p "$prefix" --argjson alive "$alive" --slurpfile req "$re
     | ($q.messages | api_messages($p)) as $r
     | ($s.fed // [] | length) as $n
     | (if $alive and $s.setup == $setup and ($r | length) > $n and $r[:$n] == $s.fed then $r[$n:] else null end) as $tail
-    | if $tail and $s.phase == "calling" and ($tail | length) == 1 and $tail[0].role == "user"
-         and ($tail[0].content | type) == "array"
-         and ($tail[0].content | all(.type == "tool_result" and carried))
-         and ([$tail[0].content[].tool_use_id] | sort) == ($s.calls | sort)
-      then {mode:"calls", answers:$tail[0].content, chunks:[], settle:0}
+    | ($tail[0].content? // null | if type == "array" then . else null end) as $c
+    | ($c // [] | map(select(.type == "tool_result"))) as $results
+    | ($c // [] | map(select(.type != "tool_result"))) as $more
+    | if $tail and $s.phase == "calling" and ($tail | length) == 1 and $tail[0].role == "user" and $c
+         and ($results | all(carried)) and ({content:$more} | carried)
+         and ([$results[].tool_use_id] | sort) == ($s.calls | sort)
+      then {mode:"calls", answers:$results, settle:0,
+            chunks:(if $more == [] then [] else [{role:"user", content:$more}] | chunks end)}
       elif $tail and $s.phase == "ending"
          and ($tail[0].content | if type == "array" then .[0].type != "tool_result" else true end)
       then {mode:"feed", answers:[], chunks:($tail | chunks), settle:1}

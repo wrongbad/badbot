@@ -4,7 +4,8 @@
 Logs to $FAKE_CLAUDE_LOG, one JSON line per record: {"start": argv, "env": ...} when it starts,
 {"in": line} for each stdin line, {"mcp": [request, response]} for each MCP exchange it starts.
 At start it asks the SDK-hosted badbot server for its tool list, as claude does. It acknowledges
-each user line sent with shouldQuery false with a result line, as claude does.
+each user line sent with shouldQuery false with a result line, as claude does. A user line
+that comes while calls wait for their results, it takes in with them, as claude does.
 
 $FAKE_CLAUDE_REPLY holds a JSON array of replies, used in order across every start (the next index
 is kept in $FAKE_CLAUDE_REPLY.n). A reply is {"events": [stream events], "calls": [tool_use ids],
@@ -77,5 +78,7 @@ for raw in sys.stdin:
                                                        "response": {}}})
     elif line["type"] == "user" and line.get("shouldQuery") is False:
         out({"type": "result", "subtype": "success", "num_turns": 0, "is_error": False})
+    elif line["type"] == "user" and waiting_calls:
+        pass  # mid-turn, as claude does: taken in at its next step, with the calls' results
     elif line["type"] == "user":
         reply()

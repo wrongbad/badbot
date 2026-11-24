@@ -145,7 +145,7 @@ TESTS_ALL=(chat tools status job barge abort abort_tree abort_jobs bad_send resu
     openai_nospace openai_crlf openai_sigterm openai_request openai_kernel openai_list
     anthropic_text anthropic_tools anthropic_401 anthropic_retry anthropic_midstream
     anthropic_sigterm anthropic_request anthropic_kernel anthropic_list
-    claudecode_turns claudecode_restart claudecode_sigterm claudecode_noclaude claudecode_kernel claudecode_effort)
+    claudecode_turns claudecode_steer claudecode_restart claudecode_sigterm claudecode_noclaude claudecode_kernel claudecode_effort)
 
 t_chat() {
     kernel s
@@ -898,13 +898,32 @@ t_claudecode_turns() {
     check log.jsonl '[$e[] | .in? // empty | select(.type == "user")] | map(.message.content[0].text) == ["hi", "again"]' \
         "claude was not given hi, then again"
 }
-t_claudecode_restart() { # steering beside call results: a new claude, given the history
-    fake_claude "$(reply_call toolu_1 '{"command":"ls"}')" "$(reply_text Fresh.)"
+t_claudecode_steer() { # steering beside call results: the same claude, told first, then the calls answered
+    fake_claude "$(reply_call toolu_1 '{"command":"ls"}')" "$(reply_text Steered.)"
     local r1 r2
     r1=$(jq -c --arg s "$T/s" '.session = $s' <<<"$CC_REQ")
     claudecode "$r1"
     r2=$(then_ "$r1" '{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"text","text":"[exit 0]"}]},
         {"type":"text","text":"and also"}]}')
+    claudecode "$r2"
+    check out.jsonl 'of("result")[0] | .stop == "end_turn" and .message.content == [{type:"text", text:"Steered."}]' \
+        "not Steered.: $(tail -n1 out.jsonl)"
+    [[ $(starts) == 1 ]] || fail "claude started $(starts) times, not once"
+    check log.jsonl '[$e[] | .in? // empty | select(.type == "user")] | length == 2
+        and (.[1] | has("shouldQuery") | not) and .[1].message.content == [{type:"text", text:"and also"}]' \
+        "the steering was not a user line of its own: $(grep '"in"' log.jsonl | tail -n 2 | cut -c1-300)"
+    check log.jsonl '($e | map(.in?.message.content[0].text == "and also") | index(true)) as $u
+        | ($e | map(.mcp?[0].method == "tools/call") | index(true)) as $m
+        | $u != null and $m != null and $u < $m and $e[$m].mcp[1].response.mcp_response.result.content[0].text == "[exit 0]"' \
+        "not told first, then the call answered with its result"
+}
+t_claudecode_restart() { # another effort: a new claude, given the history
+    fake_claude "$(reply_call toolu_1 '{"command":"ls"}')" "$(reply_text Fresh.)"
+    local r1 r2
+    r1=$(jq -c --arg s "$T/s" '.session = $s' <<<"$CC_REQ")
+    claudecode "$r1"
+    r2=$(then_ "$r1" '{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"text","text":"[exit 0]"}]},
+        {"type":"text","text":"and also"}]}' | jq -c '.effort = "low"')
     claudecode "$r2"
     check out.jsonl 'of("result")[0].message.content == [{type:"text", text:"Fresh."}]' "not Fresh.: $(tail -n1 out.jsonl)"
     [[ $(starts) == 2 ]] || fail "claude started $(starts) times, not twice"
