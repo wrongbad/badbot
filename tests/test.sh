@@ -140,7 +140,7 @@ call() { printf '!@shell %s' "$(jq -nc "$@")"; }
 
 # ---------------------------------------------------------------- tests
 TESTS_ALL=(chat tools status job barge abort abort_tree abort_jobs bad_send resume
-    sigint sighup sigterm big media actors nobus ids subagent killtree skills settings settings_env usage replace killtree_sh exit_error
+    sigint sighup sigterm big media actors nobus ids subagent killtree skills settings settings_env usage replace killtree_sh exit_error terminal
     openai_text openai_tools openai_noindex openai_stopcalls openai_401 openai_strerror
     openai_nospace openai_crlf openai_sigterm openai_request openai_kernel openai_list
     anthropic_text anthropic_tools anthropic_401 anthropic_retry anthropic_midstream
@@ -376,6 +376,17 @@ t_usage() { # /usage: the last turn's usage, as is; shown as the context it adds
     check s 'of("usage")[-1] == {type:"usage", input:1, output:2, cache_read:30, cache_write:4}' \
         "not the last turn's usage: $(get s 'of("usage")[-1] | tojson')"
     grep -qx 'usage context 35' s.stdout || fail "context 35 not shown: $(grep usage s.stdout)"
+}
+
+t_terminal() { # at a terminal (script's pty): arrows edit the line, up recalls the last, Ctrl-D ends
+    local cmd=("$BADBOT/badbot.sh" "$T/s")
+    if script -q /dev/null true </dev/null >/dev/null 2>&1; then cmd=(script -q /dev/null "${cmd[@]}") # BSD, macOS
+    elif script -qec true /dev/null </dev/null >/dev/null 2>&1; then cmd=(script -qec "$(printf '%q ' "${cmd[@]}")" /dev/null)
+    else skip "no script(1) for a pty"; fi
+    { sleep 1; printf 'helo\033[Dl\r'; sleep 1.5; printf '\033[A!\r'; sleep 1.5; printf '\004'; sleep 1; } |
+        "${cmd[@]}" >screen 2>&1 || fail "exited $?: $(cat -v screen)"
+    check s 'of("send") | map(.content) == ["hello", "hello!"]' "not what was typed: $(get s 'of("send") | map(.content) | tojson')"
+    ! grep -q 'No such file' screen || fail "a new session complains: $(cat -v screen)"
 }
 
 t_exit_error() { # exit 1 when this kernel's last run ended in an error; not for one before it

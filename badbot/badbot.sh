@@ -22,7 +22,8 @@ export BADBOT_SESSION=${1:-$(mktemp "${TMPDIR:-/tmp}/badbot-session-XXXXXX")}
 mkdir -p "$BADBOT_SESSION.d" && exec 3>"$BADBOT_SESSION.d/bus" # the bus: fd 3, empty, in every actor
 . "$(dirname "$(readlink -f "$0")")/lib.sh" # and with it, the bus's lock: fd 4 (-f: on PATH, $0 is a symlink)
 
-start=$(($(wc -c <"$session" 2>/dev/null || echo 0))) # where this kernel's events begin
+start=0 # where this kernel's events begin
+[[ -f $session ]] && start=$(($(wc -c <"$session")))
 
 "$here/input.sh" | "$here/inbox.sh" | "$here/model.sh" | "$here/tools.sh" | tee -a "$session" | "$here/show.sh"
 status=$?

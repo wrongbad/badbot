@@ -24,8 +24,21 @@ slash() {
     esac
 }
 
+# typed: each line typed, onto the bus. At a terminal, read -e edits the line
+# with readline (arrows, Home, End, word moves; its echo goes to stderr, the
+# terminal, not down the pipeline), and up and down go through what was typed
+# before, in this session, resumed too.
 typed() {
-    while IFS= read -r line || [[ $line ]]; do
+    local edit=()
+    if [[ -t 0 ]]; then
+        edit=(-e)
+        set -o history
+        while IFS= read -r line; do history -s -- "$line"; done < <(jq -Rr 'fromjson?
+            | select(.type == "send" and (.content | type) == "string" and (.content | contains("\n") | not)) | .content' \
+            "$session" 2>/dev/null | tail -n 500)
+    fi
+    while IFS= read "${edit[@]}" -r line || [[ $line ]]; do
+        [[ ${edit[*]} && $line ]] && history -s -- "$line"
         case $line in
             '') ;;
             '{'*) line=$(jq -c '{type} + .' <<<"$line" 2>/dev/null) && say "$line" ||
