@@ -2,7 +2,7 @@
 # input: the head of the pipeline, where every line comes in. What is typed
 # goes onto the bus: a plain line is a send; a line starting with { is a
 # command, put as is with its type first; a slash command is the command it
-# stands for; at the end of stdin, eof. And the bus comes down the pipeline:
+# stands for; /usage, the last turn's usage, as is; at the end of stdin, eof. And the bus comes down the pipeline:
 # every event anyone says, in order, until exit.
 #   echo hi | badbot/input.sh       (run alone: what is typed, to stdout)
 . "$(dirname "$0")/lib.sh"
@@ -30,6 +30,8 @@ typed() {
             '') ;;
             '{'*) line=$(jq -c '{type} + .' <<<"$line" 2>/dev/null) && say "$line" ||
                 put '{type:"error",where:"command",message:"invalid JSON"}' ;;
+            /usage) put '{type:"usage"} + (($t | fromjson? | .usage) // {})' \
+                --arg t "$(grep '^{"type":"turn_end"' "$session" 2>/dev/null | grep '"usage"' | tail -n 1)" ;;
             /*) slash "$line" || put '{type:"send",content:$c}' --arg c "$line" ;;
             *) put '{type:"send",content:$c}' --arg c "$line" ;;
         esac

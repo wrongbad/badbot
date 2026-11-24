@@ -63,6 +63,8 @@ foreach (inputs | fromjson? // empty) as $e ({calls: {}, early: {}, open: false,
          if .typing then .prompt = false # the terminal ended the line, with Enter
          else ($e.content | said) as $s | if $s == "" then . else .out = blue("you") + $s + "\n" end end
        elif ($e.type == "set" or $e.type == "list") and .typing then .prompt = false
+       elif $e.type == "usage" then # typed: the terminal ended the line
+         .prompt = false | .out = green("usage") + "context \($e | (.input // 0) + (.cache_read // 0) + (.cache_write // 0))\n"
        elif $e.type == "settings" then
          .out = green("using") + "\($e.provider), model \(value($e.model; "")), effort \(value($e.effort; ""))\n"
        elif $e.type == "options" then
@@ -97,7 +99,7 @@ foreach (inputs | fromjson? // empty) as $e ({calls: {}, early: {}, open: false,
   # and a new one waits when the kernel starts, when a run ends, and when a
   # command typed between runs is answered
   | if .typing and ($e.type == "hello" or $e.type == "run_end"
-        or (.run | not) and ($e.type == "settings" or $e.type == "options"
+        or (.run | not) and ($e.type == "settings" or $e.type == "options" or $e.type == "usage"
             or $e.type == "error" and ($e.where == "set" or $e.where == "list" or $e.where == "command")))
     then .out += prompt | .prompt = true else . end;
   .out)

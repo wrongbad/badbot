@@ -140,7 +140,7 @@ call() { printf '!@shell %s' "$(jq -nc "$@")"; }
 
 # ---------------------------------------------------------------- tests
 TESTS_ALL=(chat tools status job barge abort abort_tree abort_jobs bad_send resume
-    sigint sighup sigterm big media actors nobus ids subagent killtree skills settings settings_env
+    sigint sighup sigterm big media actors nobus ids subagent killtree skills settings settings_env usage
     openai_text openai_tools openai_noindex openai_stopcalls openai_401 openai_strerror
     openai_nospace openai_crlf openai_sigterm openai_request openai_kernel openai_list
     anthropic_text anthropic_tools anthropic_401 anthropic_retry anthropic_midstream
@@ -359,6 +359,23 @@ t_settings_env() { # calls, and so sub-agents, run with the session's settings, 
     wait_for s '.type == "run_end" and .run == 2'
     finish
     [[ $(<"$T/env") == echo/x/high ]] || fail "resumed, a call ran with $(<"$T/env"), not echo/x/high"
+}
+
+t_usage() { # /usage: the last turn's usage, as is; shown as the context it adds up to
+    kernel s
+    type_ /usage
+    wait_for s '.type == "usage"'
+    finish
+    check s 'of("usage") == [{type:"usage"}]' "before any turn, not a bare usage: $(get s 'of("usage") | tojson')"
+    printf '%s\n' '{"type":"turn_end","run":1,"turn":1,"stop":"end_turn","usage":{"input":1,"output":2,"cache_read":30,"cache_write":4}}' \
+        '{"type":"turn_end","run":1,"turn":2,"stop":"error"}' >>s
+    kernel s
+    type_ /usage
+    wait_for s '.type == "usage" and .output == 2'
+    finish
+    check s 'of("usage")[-1] == {type:"usage", input:1, output:2, cache_read:30, cache_write:4}' \
+        "not the last turn's usage: $(get s 'of("usage")[-1] | tojson')"
+    grep -qx 'usage context 35' s.stdout || fail "context 35 not shown: $(grep usage s.stdout)"
 }
 
 # Ctrl-C, SIGHUP, SIGTERM: the kernel's process group, with a call and a long timer running.

@@ -15,6 +15,7 @@ everyone.
 | `hello` | `input`, first | `session`, `provider`, `model`, `typing` (stdin is a terminal: a person types, and gets a prompt) | shown: the session's path, to resume it |
 | `send` | `input` (a typed line), or a command | `content`: a string, or content blocks (objects with a `type`); `when`: `turn` (default) or `now` | queued in the inbox; with no content, an `error` instead |
 | `set` | `input` (a typed `/provider NAME [MODEL]`, `/model NAME`, `/effort LEVEL`; `default` is `""`), or a command | settings: `provider`, `model`, `effort`, each a string; `""` is the provider's default | `model` changes them, and says `settings`; a provider that differs starts with its defaults for the rest |
+| `usage` | `input` (a typed `/usage`) | the last `turn_end`'s `usage`, as is: `input`, `output`, `cache_read`, `cache_write`; none before the first turn | shown: `context`, the sum of `input`, `cache_read` and `cache_write`: how full the context was when that turn started |
 | `list` | `input` (a typed `/provider`, `/model`, `/effort`), or a command | `key`: a setting | `model` says its choices: `options` |
 | `abort` | a command | `jobs`: `true` also kills jobs, whose results are then dropped | the inbox ends the run: provider stopped (`preempt`), calls killed (`cancel`), what was sent and is still queued handed back |
 | `eof` | `input`, at the end of stdin | | the kernel exits once nothing is left |

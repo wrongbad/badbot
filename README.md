@@ -118,6 +118,10 @@ for what was chosen, and the session keeps it: resumed, it goes on with it.
 <b>using</b> anthropic, model default, effort max
 </pre>
 
+`/usage` shows how full the context was at the last turn, in tokens: input,
+cache read and cache write together. The session keeps the turn's usage as
+it came, so `jq 'select(.type == "usage")' SESSION` shows all of it.
+
 `anthropic` asks for adaptive thinking, high effort, server-side fallbacks and
 prompt caching, and retries an overloaded or rate-limited API before any text
 comes. `claudecode` keeps one `claude -p` for the session, between turns, and
